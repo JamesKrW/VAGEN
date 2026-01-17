@@ -1,6 +1,6 @@
 envs:
   - name: Sokoban
-    n_envs: 256
+    n_envs: 128
     data_source: sokoban
     seed: [10001,10256,1]
     max_turns: 5

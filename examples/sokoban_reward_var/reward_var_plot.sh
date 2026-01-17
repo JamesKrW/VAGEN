@@ -3,7 +3,7 @@
 set -x
 
 PROJECT_NAME="verl_vagen"
-EXPERIMENT_NAME="reward_var_plot-0"
+EXPERIMENT_NAME="reward_var_plot-200"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
@@ -12,13 +12,13 @@ SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
 DATASET_TRAIN=${SCRIPTDIR}/train_sokoban_vision.yaml
 DATASET_VAL=${SCRIPTDIR}/val_sokoban_vision.yaml
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent_no_concat.yaml
-REF_MODEL_PATH=/projects/p32476/projects/viewsuite/Qwen2.5-VL-3B-Instruct
+REF_MODEL_PATH=/projects/p32476/projects/viewsuite/VAGEN/exps/verl_vagen/grpo_qwen25vl3b/verl_checkpoints/global_step_200/actor/huggingface
 mkdir -p ${EXPERIMENT_DIR}
 
 # Configuration for reward variance visualization
 # Set rollout_validation_n to control how many rollouts per sample for variance computation
 # Higher values give more accurate variance estimates but take longer
-ROLLOUT_VALIDATION_N=8
+ROLLOUT_VALIDATION_N=32
 
 # Resume from a checkpoint path if needed (set to empty string to start fresh)
 # Example: RESUME_PATH=${EXPERIMENT_DIR}/verl_checkpoints/global_step_100
