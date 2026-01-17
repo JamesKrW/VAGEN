@@ -135,11 +135,19 @@ def concat_val_multi_turn(
         )
         reward_extra_info: Dict[str, Any] = dict(rei)  # copy
 
+        # Construct input_ids and attention_mask for compute_log_prob
+        # input_ids = concat(prompts, responses)
+        # attention_mask = non-pad mask
+        concat_input_ids = torch.cat([concat_prompt, concat_response], dim=0)
+        concat_attention_mask = (concat_input_ids != tokenizer.pad_token_id).long()
+
         batch_entry = {
             "prompts": concat_prompt,
             "responses": concat_response,
             "response_mask": concat_response_mask,
             "rm_scores": concat_rm_scores,
+            "input_ids": concat_input_ids,
+            "attention_mask": concat_attention_mask,
         }
 
         non_tensor_entry: Dict[str, Any] = {
@@ -214,13 +222,13 @@ def concat_val_multi_turn(
         if cur == max_len:
             return t
         pad = max_len - cur
-        if kind in ("response_mask", "rm_scores"):
+        if kind in ("response_mask", "rm_scores", "attention_mask"):
             padding = torch.zeros((pad,), dtype=t.dtype, device=t.device)
         else:
             padding = torch.full((pad,), tokenizer.pad_token_id, dtype=t.dtype, device=t.device)
         return torch.cat([t, padding], dim=0)
 
-    keys = ["prompts", "responses", "response_mask", "rm_scores"]
+    keys = ["prompts", "responses", "response_mask", "rm_scores", "input_ids", "attention_mask"]
     stacked_batch: Dict[str, torch.Tensor] = {}
     for k in keys:
         vals = [be[k] for be, _ in concatenated]
