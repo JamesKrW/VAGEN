@@ -34,7 +34,7 @@ from verl.utils.device import is_cuda_available
 from .main_ppo import TaskRunner, create_rl_dataset, create_rl_sampler
 
 # Import the reward var trainer
-from .ray_trainer_reward_var import RayPPOTrainerRewardVar
+from .ray_plot_trainer import RayPlotTrainer
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -153,7 +153,7 @@ class TaskRunnerRewardVar(TaskRunner):
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         # Initialize the Reward Variance Visualization Trainer (the only change from original)
-        trainer = RayPPOTrainerRewardVar(
+        trainer = RayPlotTrainer(
             config=config,
             tokenizer=tokenizer,
             processor=processor,
