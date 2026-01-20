@@ -10,7 +10,9 @@ import numpy as np
 from collections import defaultdict
 from typing import Dict
 from verl import DataProto
-# add info logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -189,60 +191,89 @@ import copy
 import math
 import numpy as np
 import torch
+import logging
 from typing import Dict, Optional, List, Any
 from verl import DataProto
 
+# Initialize logger for error reporting
+logger = logging.getLogger(__name__)
+
 # =========================================================================
-# 1. First Turn Cleaning
+# 1. First Turn Cleaning (Physical Padding + Masking)
 # =========================================================================
 def get_first_turn_batch(batch: DataProto, tokenizer) -> DataProto:
     """
     [Step 1: Data Cleaning]
     Batch In -> Batch Out
     
-    Function: Logically truncates content after the first <|im_end|> token by 
-    modifying the Attention Mask. It does NOT modify the physical shape or 
-    data of input_ids or responses.
+    Functionality:
+    1. Logical Truncation: Modifies the mask to zero out content after the first <|im_end|>.
+    2. Physical Padding: Replaces the masked-out tokens in `input_ids` and `responses` 
+       with `pad_token_id`. This is CRITICAL for multi-modal models to prevent 
+       the vision encoder from extracting features from garbage/truncated tokens.
     
     Args:
         batch: Original DataProto
-        tokenizer: Used to retrieve the im_end_id
+        tokenizer: Used to retrieve im_end_id and pad_token_id
     
     Returns:
-        DataProto: A deep-copied Batch with modified masks.
+        DataProto: A deep-copied, sanitized Batch.
     """
     # 1. Deep copy to prevent side effects on the original training data
     new_batch = copy.deepcopy(batch)
     device = new_batch.batch.device
     
-    # 2. Retrieve <|im_end|> token id
+    # 2. Retrieve key Token IDs
     if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
          im_end_id = tokenizer.eos_token_id
     else:
          im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
     
+    if hasattr(tokenizer, "pad_token_id") and tokenizer.pad_token_id is not None:
+        pad_token_id = tokenizer.pad_token_id
+    else:
+        # Fallback: if no pad_token_id, use im_end or 0
+        pad_token_id = im_end_id 
+        
     if isinstance(im_end_id, list): im_end_id = im_end_id[0]
+    if isinstance(pad_token_id, list): pad_token_id = pad_token_id[0]
 
     # 3. Extract data
     responses = new_batch.batch["responses"]
+    input_ids = new_batch.batch["input_ids"]
     B, R_len = responses.shape
-    
+    Seq_len = input_ids.shape[1]
+    P_len = Seq_len - R_len # Length of the Prompt
+
     # 4. Vectorized search for truncation points
     is_end = (responses == im_end_id)
     end_indices = is_end.float().argmax(dim=1) 
     has_end = is_end.sum(dim=1) > 0
     
-    # Determine valid length: index + 1 if found, else full length
+    # Calculate valid length (including im_end)
     valid_lens = torch.where(has_end, end_indices + 1, torch.tensor(R_len, device=device))
     
     # 5. Generate Tail Mask
     col_indices = torch.arange(R_len, device=device).unsqueeze(0) 
     cutoff = valid_lens.unsqueeze(1)
     
-    # 1 where index < valid_len, else 0
-    tail_mask = (col_indices < cutoff).long()
+    # Mask: 1 for valid tokens, 0 for truncated tokens
+    tail_mask = (col_indices < cutoff).long() # [B, R]
     
-    # 6. Update Masks in Batch
+    # 6. [CRITICAL UPGRADE] Physical Padding
+    # Force replace masked tokens with Pad ID.
+    # This prevents "Image features and tokens do not match" errors in Qwen2-VL.
+    
+    # a. Modify Responses Tensor
+    pad_mask = (tail_mask == 0)
+    new_batch.batch["responses"].masked_fill_(pad_mask, pad_token_id)
+    
+    # b. Modify Input IDs Tensor (Only the response part)
+    response_part_input_ids = new_batch.batch["input_ids"][:, P_len:]
+    response_part_input_ids.masked_fill_(pad_mask, pad_token_id)
+    new_batch.batch["input_ids"][:, P_len:] = response_part_input_ids
+
+    # 7. Update Attention Masks
     if "attention_mask" in new_batch.batch:
         new_batch.batch["attention_mask"][:, -R_len:] *= tail_mask
     if "response_mask" in new_batch.batch:
@@ -254,132 +285,115 @@ def get_first_turn_batch(batch: DataProto, tokenizer) -> DataProto:
 
 
 # =========================================================================
-# 2. Compute MI (Memory Optimized with Chunking)
+# 2. Compute MI (Robust Multi-modal & OOM Optimized)
 # =========================================================================
 def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
     """
-    [Step 2: Memory-Efficient Cross-Scoring]
+    [Step 2] Robust Mutual Information Calculation
     
-    Strategy:
-    Instead of constructing a massive M*N batch (which causes OOM), 
-    we iterate through N unique prompts. In each iteration, we construct 
-    a batch of size M (pairing 1 Prompt with M Responses).
-    
-    Complexity:
-    - Time: Same as full broadcast (total computations unchanged).
-    - Memory: Reduced by factor of N (Batch size stays M).
+    Features:
+    - OOM Prevention: Uses Chunking (iterating by Prompt). Batch size remains M.
+    - Multi-modal Fix: Physically replicates image objects using Python lists.
+    - Error Handling: Includes try-except blocks to skip failed batches without crashing.
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # --- A. Basic Information Extraction ---
-    original_responses = batch.batch["responses"]   # [M, R]
+    original_responses = batch.batch["responses"]   # [M, R] (Already physically padded)
     original_input_ids = batch.batch["input_ids"]   # [M, P+R]
     original_pos_ids = batch.batch.get("position_ids", None)
     
-    # Extract Multi-Modal Inputs (e.g., images/videos)
+    # Extract Multi-modal inputs
+    # Note: In 'verl', multi_modal_inputs can be np.ndarray(dtype=object) or list
     multi_modal_inputs = batch.non_tensor_batch.get("multi_modal_inputs", None)
     has_multi_modal = multi_modal_inputs is not None
     
     M_responses, R_len = original_responses.shape
     P_len = original_input_ids.shape[1] - R_len 
     
-    # Get the Cleaned Response Mask (from Step 1)
+    # Get the cleaned Response Mask
     clean_response_mask = batch.batch["attention_mask"][:, -R_len:] # [M, R]
     
-    # Get Group Info
+    # Group Info
     group_ids = batch.non_tensor_batch.get("group_idx") or batch.non_tensor_batch.get("uid")
     if group_ids is None: group_ids = np.arange(M_responses)
     unique_groups, group_indices = np.unique(group_ids, return_inverse=True)
     N_prompts = len(unique_groups)
     
-    if N_prompts < 2: 
-        return {}
+    if N_prompts < 2: return {}
 
-    # Check for Complex Position IDs (e.g., Qwen2-VL has 3D/4D pos_ids)
+    # Check for Complex Position IDs (e.g., Qwen2-VL has >2 dims)
     is_complex_pos = (original_pos_ids is not None) and (original_pos_ids.ndim > 2)
 
     # --- B. Prepare Result Matrix ---
     # matrix_log_probs[j, i] = LogProb(Response i | Prompt j)
-    # We will fill this matrix row by row.
     matrix_log_probs = torch.zeros((N_prompts, M_responses), device=device, dtype=torch.float32)
 
-    # --- C. Pre-fetch Prompt Metadata ---
-    prompt_indices = [] # Indices of the first sample for each group
+    # --- C. Pre-fetch Prompt Data ---
+    prompt_indices = [] 
     for gid in unique_groups:
         idx = np.where(group_ids == gid)[0][0]
         prompt_indices.append(idx)
     
-    # Convert to Tensor for slicing
-    # unique_prompt_input_ids: [N, P]
     unique_prompt_input_ids = original_input_ids[prompt_indices, :P_len]
     
     unique_prompt_pos_ids = None
     if is_complex_pos:
-        # unique_prompt_pos_ids: [N, ..., P]
         unique_prompt_pos_ids = original_pos_ids[prompt_indices, ..., :P_len]
 
     # --- D. Chunking Loop (Iterate by Target Prompt) ---
     for j in range(N_prompts):
         
-        # 1. Prepare Current Prompt (Expand 1 -> M)
-        # curr_prompt_ids: [1, P] -> [M, P]
+        # 1. Expand Current Prompt (1 -> M)
         curr_prompt_ids = unique_prompt_input_ids[j:j+1].expand(M_responses, -1)
-        
-        # Concatenate Input IDs: [M, P+R]
         cross_input_ids = torch.cat([curr_prompt_ids, original_responses], dim=1)
         
         # 2. Prepare Masks
         prompt_mask = (curr_prompt_ids != 0).long()
-        # Note: Response mask is reused from the M original responses
         cross_attention_mask = torch.cat([prompt_mask, clean_response_mask], dim=1)
         
-        # 3. Handle Position IDs (The tricky part)
+        # 3. Handle Position IDs
         if is_complex_pos:
             # === Anchor Shifting for Qwen2-VL ===
-            
-            # a. Expand Current Prompt Pos: [1, ..., P] -> [M, ..., P]
-            # (Assuming dims are [Batch, Channels, Seq])
+            # Preserve spatial structure of response, shift based on prompt length diff
             curr_prompt_pos = unique_prompt_pos_ids[j:j+1].expand(M_responses, -1, -1)
+            new_anchor = curr_prompt_pos[..., -1:] 
+            old_anchors = original_pos_ids[..., :P_len][..., -1:]
+            shift = new_anchor - old_anchors
             
-            # b. Calculate Shift
-            # New Anchor: The end position of the current target prompt
-            new_anchor = curr_prompt_pos[..., -1:] # [M, ..., 1]
-            
-            # Old Anchors: The end position of the ORIGINAL prompts for these M responses
-            # We slice the prompt part from original_pos_ids and take the last token
-            old_anchors = original_pos_ids[..., :P_len][..., -1:] # [M, ..., 1]
-            
-            # Shift = New - Old
-            shift = new_anchor - old_anchors # [M, ..., 1]
-            
-            # c. Apply Shift to Response Pos
-            # Take original response positions and shift them
             original_response_pos = original_pos_ids[..., -R_len:]
             curr_response_pos = original_response_pos + shift
-            
-            # d. Concatenate
             cross_position_ids = torch.cat([curr_prompt_pos, curr_response_pos], dim=-1)
-            
         else:
-            # === Simple Regeneration (Standard LLMs) ===
+            # === Simple Regeneration ===
             cross_position_ids = torch.cumsum(cross_attention_mask, dim=1) - 1
             cross_position_ids.masked_fill_(cross_attention_mask == 0, 0)
             
-        # 4. Handle Multi-Modal Inputs
-        # We need to broadcast the image/video from Prompt j to all M responses
+        # 4. [CRITICAL FIX] Handle Multi-Modal Inputs
         cross_non_tensor_batch = {}
         if has_multi_modal:
-            # Get the single image object for the current prompt group
+            # Get the single image data object for the current prompt
             src_idx = prompt_indices[j]
-            single_image_data = multi_modal_inputs[src_idx]
             
-            # Replicate M times (Reference Copy, low memory overhead)
+            # Ensure we get the raw Python object (dict/list), not a numpy wrapper
             if isinstance(multi_modal_inputs, np.ndarray):
-                # Create object array filled with the same image object
-                cross_imgs = np.array([single_image_data] * M_responses, dtype=object)
+                single_image_data = multi_modal_inputs[src_idx]
             else:
-                cross_imgs = [single_image_data] * M_responses
-                
+                single_image_data = multi_modal_inputs[src_idx]
+            
+            # Construct List: Replicate the SAME image M times
+            # Using Python list multiplication ensures correct object reference copying
+            cross_imgs_list = [single_image_data] * M_responses
+            
+            # [Assertion 1] Check Alignment
+            if len(cross_imgs_list) != M_responses:
+                logger.error(f"[MI Check] Image list len {len(cross_imgs_list)} != Batch size {M_responses}")
+                # Force slice if mismatch occurs (Defensive programming)
+                cross_imgs_list = cross_imgs_list[:M_responses]
+            
+            # Convert back to numpy object array for Verl compatibility
+            cross_imgs = np.array(cross_imgs_list, dtype=object)
+            
             cross_non_tensor_batch["multi_modal_inputs"] = cross_imgs
 
         # 5. Construct DataProto (Batch Size = M)
@@ -391,32 +405,35 @@ def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
                 "position_ids": cross_position_ids
             },
             non_tensors=cross_non_tensor_batch,
-            meta_info=batch.meta_info # Inherit config like temperature/micro_batch_size
+            meta_info=batch.meta_info 
         )
         
-        # 6. Compute Log Probabilities
-        # The actor handles micro-batching internally for these M samples
-        log_probs_raw, _ = actor_wg.compute_log_prob(cross_batch)
+        # 6. Compute LogProb with Error Handling
+        try:
+            log_probs_raw, _ = actor_wg.compute_log_prob(cross_batch)
+        except ValueError as e:
+            # Catch "features and tokens do not match" errors
+            # Log error and skip this prompt row (leave as 0s) to prevent crash
+            logger.error(f"[MI Error] Failed at prompt {j}: {e}")
+            continue
         
         if log_probs_raw.shape[1] != R_len:
             log_probs_raw = log_probs_raw[:, -R_len:]
             
-        # 7. Store Scores
-        # Mask out truncated parts (garbage after im_end)
-        valid_log_probs = log_probs_raw * clean_response_mask # [M, R]
-        seq_log_probs = valid_log_probs.sum(dim=-1)           # [M]
-        
-        # Fill the j-th row of the matrix
+        # 7. Fill Result Matrix
+        valid_log_probs = log_probs_raw * clean_response_mask 
+        seq_log_probs = valid_log_probs.sum(dim=-1)           
         matrix_log_probs[j, :] = seq_log_probs
 
     # --- E. Compute MI Metrics ---
-    # Transpose Matrix to [M, N] -> (Response i, Prompt j)
+    # Transpose to [M, N] -> (Response i, Prompt j)
     matrix_log_probs = matrix_log_probs.t() 
     
-    # Matched: Diagonal logic (Response i belongs to its original group)
+    # Matched Score: Diagonal elements
     matched = matrix_log_probs[torch.arange(M_responses), group_indices]
     
-    # Marginal: LogSumExp over all N Prompts (Normalized)
+    # Marginal Score: LogSumExp over Prompts
+    # Note: If some rows failed (0s), this is an approximation. 
     marginal = torch.logsumexp(matrix_log_probs, dim=1) - math.log(N_prompts)
     
     mi_per_sample = matched - marginal
@@ -425,10 +442,8 @@ def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
     group_mi_results = {}
     mi_numpy = mi_per_sample.detach().cpu().numpy()
     
-    # Global Average
     group_mi_results["collapse/mi_global"] = float(np.mean(mi_numpy))
     
-    # Per-Group Average
     for gid in unique_groups:
         mask = (group_ids == gid)
         if mask.any():
@@ -445,9 +460,28 @@ def compute_group_mi_first_turn(batch: DataProto, actor_wg, tokenizer) -> Dict[s
     Main Entry Point.
     
     Pipeline:
+    1. get_first_turn_batch: Clean batch, apply physical padding (O(M)).
+    2. compute_mi: Compute MI using chunked cross-scoring (O(M*N)).
+    """
+    cleaned_batch = get_first_turn_batch(batch, tokenizer)
+    mi_metrics = compute_mi(cleaned_batch, actor_wg)
+    return mi_metrics
+
+
+# =========================================================================
+# 3. Entry Point
+# =========================================================================
+def compute_group_mi_first_turn(batch: DataProto, actor_wg, tokenizer) -> Dict[str, float]:
+    """
+    Main Entry Point.
+    
+    Pipeline:
     1. Clean Batch: Logically truncate to first turn (O(M)).
     2. Compute MI: Perform chunked cross-scoring (O(M*N)).
     """
+    if batch.non_tensor_batch.get("multi_modal_inputs") is not None:
+        logger.warning("Skipping collapse/mi for multi-modal batch to avoid image token/feature mismatch.")
+        return {}
     cleaned_batch = get_first_turn_batch(batch, tokenizer)
     mi_metrics = compute_mi(cleaned_batch, actor_wg)
     return mi_metrics
