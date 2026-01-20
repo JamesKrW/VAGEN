@@ -183,7 +183,6 @@ def group_response_len_mean(batch: DataProto,**kwargs) -> Dict[str, float]:
 
 
 
-
 import copy
 import math
 import numpy as np
@@ -250,18 +249,14 @@ def get_first_turn_batch(batch: DataProto, tokenizer) -> DataProto:
         # Use *= to ensure originally padded positions (0) remain 0
         new_batch.batch["attention_mask"][:, -R_len:] *= tail_mask
 
-    # Handle other potential masks
+    # Handle other potential masks (e.g., for loss calculation)
     if "response_mask" in new_batch.batch:
          new_batch.batch["response_mask"] *= tail_mask
     if "loss_mask" in new_batch.batch:
          new_batch.batch["loss_mask"] *= tail_mask
 
-    # 7. Regenerate Position IDs (since tokens were masked out)
-    # cumsum ensures position encodings remain compact
-    if "attention_mask" in new_batch.batch:
-        new_position_ids = torch.cumsum(new_batch.batch["attention_mask"], dim=1) - 1
-        new_position_ids.masked_fill_(new_batch.batch["attention_mask"] == 0, 0)
-        new_batch.batch["position_ids"] = new_position_ids
+    # Note: We do NOT regenerate position_ids here. We leave that complex logic 
+    # to the compute_mi function to handle multimodal compatibility.
 
     return new_batch
 
@@ -271,7 +266,7 @@ def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
     [Step 2: Cross-Scoring Calculation]
     
     Function: Computes Mutual Information on the cleaned mixed Batch and aggregates results by Group.
-    Assumes the input batch is already in a First-Turn Cleaned state.
+    Features: Automatically handles 3D position_ids (e.g., Qwen2-VL) via Anchor Shifting.
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
@@ -280,11 +275,12 @@ def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
     # ==========================
     original_responses = batch.batch["responses"]
     original_input_ids = batch.batch["input_ids"]
+    original_pos_ids = batch.batch.get("position_ids", None)
+    
     M_responses, R_len = original_responses.shape
     P_len = original_input_ids.shape[1] - R_len # Length of Prompt
     
     # Get the cleaned Response Mask (reuse directly from batch)
-    # This is crucial: we reuse the result from step 1 (get_first_turn_batch)
     clean_response_mask = batch.batch["attention_mask"][:, -R_len:]
     
     # Get Group Info
@@ -298,28 +294,40 @@ def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
     if N_prompts < 2: 
         return {}
 
+    # Check if position_ids require complex handling (multimodal/3D structure)
+    # If ndim > 2, it's likely a model like Qwen2-VL
+    is_complex_pos = (original_pos_ids is not None) and (original_pos_ids.ndim > 2)
+
     # ==========================
-    # 2. Extract Unique Prompts
+    # 2. Extract Unique Prompts (and Pos IDs if complex)
     # ==========================
     unique_prompts_list = []
+    unique_prompt_pos_list = []
+    
     for gid in unique_groups:
         idx = np.where(group_ids == gid)[0][0]
-        # Extract the left part (Prompt)
+        # Extract Prompt Input IDs
         unique_prompts_list.append(original_input_ids[idx, :P_len])
+        
+        # If complex, extract the Prompt part of position_ids
+        if is_complex_pos:
+            # Slicing: [..., :P_len] handles arbitrary dimensions (e.g., [3, Seq])
+            unique_prompt_pos_list.append(original_pos_ids[idx, ..., :P_len])
+
     unique_prompts = torch.stack(unique_prompts_list).to(device) # [N, P_len]
     
     # ==========================
     # 3. Construct Cross Batch (Broadcasting)
     # ==========================
-    # Goal: Construct an M*N Batch
     
-    # Expand Prompts: [N, P] -> [N*M, P] (Repeat Interleave: P1, P1, P2, P2...)
+    # --- Input IDs Expansion ---
+    # Expand Prompts: [N, P] -> [N*M, P] (Repeat Interleave)
     expanded_prompts = unique_prompts.repeat_interleave(M_responses, dim=0)
     
-    # Expand Responses: [M, R] -> [N*M, R] (Repeat: R1, R2, R3...)
+    # Expand Responses: [M, R] -> [N*M, R] (Repeat)
     expanded_responses = original_responses.repeat(N_prompts, 1)
     
-    # Expand Response Masks: [M, R] -> [N*M, R] (Synchronize with Response expansion)
+    # Expand Masks: [M, R] -> [N*M, R]
     expanded_res_masks = clean_response_mask.repeat(N_prompts, 1)
     
     # Concatenate Input IDs
@@ -329,12 +337,54 @@ def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
     prompt_mask = (expanded_prompts != 0).long()
     cross_attention_mask = torch.cat([prompt_mask, expanded_res_masks], dim=1)
     
-    # Generate Position IDs
-    cross_position_ids = torch.cumsum(cross_attention_mask, dim=1) - 1
-    cross_position_ids.masked_fill_(cross_attention_mask == 0, 0)
-    
     # ==========================
-    # 4. Actor Forward Pass
+    # 4. Position ID Construction (Adaptive)
+    # ==========================
+    if is_complex_pos:
+        # --- Branch A: Complex Multimodal Position IDs (Anchor Shifting) ---
+        # Goal: Keep the internal spatial structure of the Response, 
+        # but shift it to start after the New Prompt ends.
+        
+        # Stack Unique Prompt Pos: [N, ..., P]
+        unique_prompt_pos = torch.stack(unique_prompt_pos_list).to(device)
+        
+        # 1. Expand Prompt Pos: [N*M, ..., P]
+        expanded_prompt_pos = unique_prompt_pos.repeat_interleave(M_responses, dim=0)
+        
+        # 2. Calculate "Shift"
+        # New Anchor: The position ID of the last token in the NEW prompt
+        new_anchors = expanded_prompt_pos[..., -1:] # [N*M, ..., 1]
+        
+        # Old Anchor: The position ID of the last token in the ORIGINAL prompt
+        original_prompt_pos = original_pos_ids[..., :P_len]
+        old_anchors = original_prompt_pos[..., -1:] # [M, ..., 1]
+        
+        # Expand Old Anchors to match N*M size
+        # We need to repeat N times on dim 0 to match expanded_responses
+        repeat_dims = [N_prompts] + [1] * (old_anchors.ndim - 1)
+        expanded_old_anchors = old_anchors.repeat(*repeat_dims)
+        
+        # Shift = New_End_Pos - Old_End_Pos
+        pos_shift = new_anchors - expanded_old_anchors
+        
+        # 3. Apply Shift to Response Pos
+        original_response_pos = original_pos_ids[..., -R_len:]
+        repeat_dims_res = [N_prompts] + [1] * (original_response_pos.ndim - 1)
+        expanded_response_pos = original_response_pos.repeat(*repeat_dims_res)
+        
+        shifted_response_pos = expanded_response_pos + pos_shift
+        
+        # 4. Concatenate: [N*M, ..., P+R]
+        cross_position_ids = torch.cat([expanded_prompt_pos, shifted_response_pos], dim=-1)
+        
+    else:
+        # --- Branch B: Standard Text Position IDs (Regeneration) ---
+        # Simply regenerate using cumsum based on the mask
+        cross_position_ids = torch.cumsum(cross_attention_mask, dim=1) - 1
+        cross_position_ids.masked_fill_(cross_attention_mask == 0, 0)
+
+    # ==========================
+    # 5. Actor Forward Pass
     # ==========================
     cross_batch = DataProto.from_dict(
         tensors={
@@ -347,57 +397,62 @@ def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
     )
     
     # Compute LogProb
-    # Note: actor_wg.compute_log_prob usually handles micro-batching automatically
     log_probs_raw, _ = actor_wg.compute_log_prob(cross_batch)
     
+    # Ensure we only get the response part
     if log_probs_raw.shape[1] != R_len:
         log_probs_raw = log_probs_raw[:, -R_len:]
         
     # ==========================
-    # 5. MI Formula Calculation
+    # 6. MI Formula Calculation
     # ==========================
-    # Use the mask again to filter out LogProb noise from truncated parts (garbage after im_end)
+    # Use mask to filter out garbage LogProb from truncated parts
     valid_log_probs = log_probs_raw * expanded_res_masks
     
-    # Sum: [N*M]
+    # Sum over sequence length: [N*M]
     seq_log_probs = valid_log_probs.sum(dim=-1)
     
     # Reshape: [N, M] -> [M, N]
     # Matrix[i, j] = LogProb(Response i | Prompt j)
-    # Note transpose: because we constructed with P_outer, R_inner
+    # Transpose needed because we constructed as P_outer, R_inner
     matrix_log_probs = seq_log_probs.view(N_prompts, M_responses).t()
     
     # Matched: Diagonal logic (Each Response i corresponds to its real Group)
     matched = matrix_log_probs[torch.arange(M_responses), group_indices]
     
-    # Marginal: LogSumExp over Prompts (Normalized to probability space)
-    # log( 1/N * sum_j exp(L_ij) ) = logsumexp - log(N)
+    # Marginal: LogSumExp over Prompts (Normalized)
+    # log( 1/N * sum_j exp(L_ij) )
     marginal = torch.logsumexp(matrix_log_probs, dim=1) - math.log(N_prompts)
     
     mi_per_sample = matched - marginal
     
     # ==========================
-    # 6. Aggregate Results by Group
+    # 7. Aggregate Results by Group
     # ==========================
     group_mi_results = {}
     mi_numpy = mi_per_sample.detach().cpu().numpy()
     
-    # Record global average
+    # Global average
     group_mi_results["collapse/mi_global"] = float(np.mean(mi_numpy))
     
-    # Record average per Group
+    # Per-group average
     for gid in unique_groups:
         mask = (group_ids == gid)
         if mask.any():
-            # Use str(gid) as key
             group_mi_results[f"collapse/mi_group_{gid}"] = float(np.mean(mi_numpy[mask]))
             
     return group_mi_results
 
 
-def compute_group_mi_first_turn(batch: DataProto, actor_wg, tokenizer, **kwargs) -> Dict[str, float]:
+def compute_group_mi_first_turn(batch: DataProto, actor_wg, tokenizer) -> Dict[str, float]:
     """
     [Entry Point] 
+    
+    Calculates Mutual Information (MI) based on the First Turn of the conversation.
+    
+    Pipeline:
+    1. get_first_turn_batch: Logically truncates the batch to the first turn (O(M)).
+    2. compute_mi: Performs cross-scoring on the mixed batch (O(N*M)) and aggregates.
     
     Args:
         batch: Original DataProto (containing full multi-turn conversations)
@@ -405,14 +460,12 @@ def compute_group_mi_first_turn(batch: DataProto, actor_wg, tokenizer, **kwargs)
         tokenizer: Used to identify the im_end token
         
     Returns:
-        Dict: {group_id: mi_value}
+        Dict: {group_id: mi_value, "collapse/mi_global": value}
     """
-    # 1. Preprocessing: Clean Batch, truncate to First Turn (O(M))
-    # This function does not change physical data shape, only modifies the mask
+    # 1. Preprocessing: Clean Batch, truncate to First Turn
     cleaned_batch = get_first_turn_batch(batch, tokenizer)
     
-    # 2. Calculation: Cross-Scoring on the mixed Batch (O(N*M))
-    # And split results by Group at the end
+    # 2. Calculation: Cross-Scoring on the mixed Batch
     mi_metrics = compute_mi(cleaned_batch, actor_wg)
     
     return mi_metrics
