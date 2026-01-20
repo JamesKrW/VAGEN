@@ -22,7 +22,7 @@ def _get_group_ids(batch: DataProto) -> np.ndarray:
         raise ValueError("Batch must contain 'group_idx' or 'uid' in non_tensor_batch")
 
 
-def group_reward_variance(batch: DataProto, ddof: int = 0) -> Dict[str, float]:
+def group_reward_variance(batch: DataProto, ddof: int = 0, **kwargs) -> Dict[str, float]:
     """Compute the variance of rewards within each group.
 
     For each group, calculates Var(total_reward_i) for all samples i in that group.
@@ -90,7 +90,7 @@ def group_reward_mean(batch: DataProto) -> Dict[str, float]:
     return result
 
 
-def group_entropy_mean(batch: DataProto) -> Dict[str, float]:
+def group_entropy_mean(batch: DataProto, **kwargs) -> Dict[str, float]:
     """Compute the mean entropy across samples within each group.
 
     Uses pre-computed per-sample entropys aggregated by response mask.
@@ -145,7 +145,7 @@ def group_entropy_mean(batch: DataProto) -> Dict[str, float]:
     return result
 
 
-def group_response_len_mean(batch: DataProto) -> Dict[str, float]:
+def group_response_len_mean(batch: DataProto,**kwargs) -> Dict[str, float]:
     """Compute the mean response length across samples within each group.
 
     Response length is computed from the response_mask (sum of valid tokens).
@@ -178,235 +178,244 @@ def group_response_len_mean(batch: DataProto) -> Dict[str, float]:
     return result
 
 
-def group_advantage_mean(batch: DataProto) -> Dict[str, float]:
-    """Compute the mean advantage across samples within each group.
 
-    Args:
-        batch: DataProto containing advantages and response_mask.
 
-    Returns:
-        Dict mapping group_id to mean advantage within that group.
+
+
+
+
+import copy
+import math
+import numpy as np
+import torch
+from typing import Dict, Optional
+from verl import DataProto
+
+def get_first_turn_batch(batch: DataProto, tokenizer) -> DataProto:
     """
-    group_ids = _get_group_ids(batch)
-
-    if "advantages" not in batch.batch:
-        raise ValueError("Batch must contain 'advantages' for advantage computation")
-
-    advantages = batch.batch["advantages"]
-    response_mask = batch.batch["response_mask"]
-
-    if isinstance(advantages, torch.Tensor):
-        advantages = advantages.detach().cpu()
-        response_mask = response_mask.detach().cpu()
-
-        # Compute masked mean advantage per sample
-        mask_sum = response_mask.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        sample_advantages = (advantages * response_mask).sum(dim=-1) / mask_sum.squeeze(-1)
-        sample_advantages = sample_advantages.numpy()
+    [Step 1: Data Cleaning]
+    Batch In -> Batch Out
+    
+    Function: Logically truncates content after the first <|im_end|> token by only modifying 
+    the Attention Mask. It does not modify the physical shape or data of input_ids or responses.
+    
+    Args:
+        batch: Original DataProto
+        tokenizer: Used to retrieve the im_end_id
+    
+    Returns:
+        DataProto: A deep-copied Batch with modified masks.
+    """
+    # 1. Deep Copy to prevent side effects on the original training data
+    new_batch = copy.deepcopy(batch)
+    device = new_batch.batch.device
+    
+    # 2. Automatically retrieve the <|im_end|> token id
+    if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
+         im_end_id = tokenizer.eos_token_id
     else:
-        advantages = np.asarray(advantages)
-        response_mask = np.asarray(response_mask)
-        mask_sum = response_mask.sum(axis=-1, keepdims=True)
-        mask_sum = np.maximum(mask_sum, 1e-8)
-        sample_advantages = (advantages * response_mask).sum(axis=-1) / mask_sum.squeeze(-1)
+         # Fallback: try to retrieve by string conversion
+         im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    
+    if isinstance(im_end_id, list): im_end_id = im_end_id[0]
 
-    # Group advantages by group_id
-    group_advantages = defaultdict(list)
-    for gid, adv in zip(group_ids, sample_advantages):
-        group_advantages[str(gid)].append(float(adv))
+    # 3. Extract data
+    responses = new_batch.batch["responses"] # [B, R_len]
+    B, R_len = responses.shape
+    
+    # 4. Vectorized search for truncation points (First-Turn Finding)
+    # is_end: [B, R_len] (bool)
+    is_end = (responses == im_end_id)
+    # end_indices: Index of the first True value for each sample (returns 0 if all False)
+    end_indices = is_end.float().argmax(dim=1) 
+    # has_end: Mark which samples actually contain im_end
+    has_end = is_end.sum(dim=1) > 0
+    
+    # valid_lens: Valid length including im_end
+    # If im_end is not found, default to full length (or non-zero length)
+    valid_lens = torch.where(has_end, end_indices + 1, torch.tensor(R_len, device=device))
+    
+    # 5. Generate Tail Mask
+    # Create column indices [1, R]
+    col_indices = torch.arange(R_len, device=device).unsqueeze(0) 
+    # Create truncation thresholds [B, 1]
+    cutoff = valid_lens.unsqueeze(1)
+    
+    # Generate Mask: 1 where index < valid_len, else 0
+    tail_mask = (col_indices < cutoff).long()
+    
+    # 6. Modify the Mask in the Batch
+    # Only modify the last R_len columns (the Response part)
+    if "attention_mask" in new_batch.batch:
+        # Use *= to ensure originally padded positions (0) remain 0
+        new_batch.batch["attention_mask"][:, -R_len:] *= tail_mask
 
-    # Compute mean advantage for each group
-    result = {}
-    for gid, advs in group_advantages.items():
-        result[gid] = float(np.mean(advs))
+    # Handle other potential masks
+    if "response_mask" in new_batch.batch:
+         new_batch.batch["response_mask"] *= tail_mask
+    if "loss_mask" in new_batch.batch:
+         new_batch.batch["loss_mask"] *= tail_mask
 
-    return result
+    # 7. Regenerate Position IDs (since tokens were masked out)
+    # cumsum ensures position encodings remain compact
+    if "attention_mask" in new_batch.batch:
+        new_position_ids = torch.cumsum(new_batch.batch["attention_mask"], dim=1) - 1
+        new_position_ids.masked_fill_(new_batch.batch["attention_mask"] == 0, 0)
+        new_batch.batch["position_ids"] = new_position_ids
+
+    return new_batch
 
 
-def group_old_log_prob_mean(batch: DataProto) -> Dict[str, float]:
-    """Compute the mean old log probability across samples within each group.
-
-    Args:
-        batch: DataProto containing old_log_probs and response_mask.
-
-    Returns:
-        Dict mapping group_id to mean old log prob within that group.
+def compute_mi(batch: DataProto, actor_wg) -> Dict[str, float]:
     """
-    group_ids = _get_group_ids(batch)
-
-    if "old_log_probs" not in batch.batch:
-        raise ValueError("Batch must contain 'old_log_probs'")
-
-    old_log_probs = batch.batch["old_log_probs"]
-    response_mask = batch.batch["response_mask"]
-
-    if isinstance(old_log_probs, torch.Tensor):
-        old_log_probs = old_log_probs.detach().cpu()
-        response_mask = response_mask.detach().cpu()
-
-        # Compute masked mean log prob per sample
-        mask_sum = response_mask.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        sample_log_probs = (old_log_probs * response_mask).sum(dim=-1) / mask_sum.squeeze(-1)
-        sample_log_probs = sample_log_probs.numpy()
-    else:
-        old_log_probs = np.asarray(old_log_probs)
-        response_mask = np.asarray(response_mask)
-        mask_sum = response_mask.sum(axis=-1, keepdims=True)
-        mask_sum = np.maximum(mask_sum, 1e-8)
-        sample_log_probs = (old_log_probs * response_mask).sum(axis=-1) / mask_sum.squeeze(-1)
-
-    # Group by group_id
-    group_log_probs = defaultdict(list)
-    for gid, lp in zip(group_ids, sample_log_probs):
-        group_log_probs[str(gid)].append(float(lp))
-
-    # Compute mean for each group
-    result = {}
-    for gid, lps in group_log_probs.items():
-        result[gid] = float(np.mean(lps))
-
-    return result
-
-
-def _get_first_turn_mask(responses: torch.Tensor, response_mask: torch.Tensor, im_end_token_id: int) -> torch.Tensor:
-    """Create a mask that only covers the first turn (up to first <|im_end|> token).
-
-    Args:
-        responses: Response token ids, shape (batch_size, seq_len)
-        response_mask: Original response mask, shape (batch_size, seq_len)
-        im_end_token_id: Token id for <|im_end|>
-
-    Returns:
-        Modified mask that zeros out everything after the first <|im_end|> token.
+    [Step 2: Cross-Scoring Calculation]
+    
+    Function: Computes Mutual Information on the cleaned mixed Batch and aggregates results by Group.
+    Assumes the input batch is already in a First-Turn Cleaned state.
     """
-    batch_size, seq_len = responses.shape
-    first_turn_mask = response_mask.clone()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # ==========================
+    # 1. Basic Information Extraction
+    # ==========================
+    original_responses = batch.batch["responses"]
+    original_input_ids = batch.batch["input_ids"]
+    M_responses, R_len = original_responses.shape
+    P_len = original_input_ids.shape[1] - R_len # Length of Prompt
+    
+    # Get the cleaned Response Mask (reuse directly from batch)
+    # This is crucial: we reuse the result from step 1 (get_first_turn_batch)
+    clean_response_mask = batch.batch["attention_mask"][:, -R_len:]
+    
+    # Get Group Info
+    group_ids = batch.non_tensor_batch.get("group_idx") or batch.non_tensor_batch.get("uid")
+    if group_ids is None: group_ids = np.arange(M_responses)
+    
+    unique_groups, group_indices = np.unique(group_ids, return_inverse=True)
+    N_prompts = len(unique_groups)
+    
+    # Must have at least 2 different prompts to compute MI
+    if N_prompts < 2: 
+        return {}
 
-    for i in range(batch_size):
-        # Find positions where token equals im_end_token_id
-        im_end_positions = (responses[i] == im_end_token_id).nonzero(as_tuple=True)[0]
+    # ==========================
+    # 2. Extract Unique Prompts
+    # ==========================
+    unique_prompts_list = []
+    for gid in unique_groups:
+        idx = np.where(group_ids == gid)[0][0]
+        # Extract the left part (Prompt)
+        unique_prompts_list.append(original_input_ids[idx, :P_len])
+    unique_prompts = torch.stack(unique_prompts_list).to(device) # [N, P_len]
+    
+    # ==========================
+    # 3. Construct Cross Batch (Broadcasting)
+    # ==========================
+    # Goal: Construct an M*N Batch
+    
+    # Expand Prompts: [N, P] -> [N*M, P] (Repeat Interleave: P1, P1, P2, P2...)
+    expanded_prompts = unique_prompts.repeat_interleave(M_responses, dim=0)
+    
+    # Expand Responses: [M, R] -> [N*M, R] (Repeat: R1, R2, R3...)
+    expanded_responses = original_responses.repeat(N_prompts, 1)
+    
+    # Expand Response Masks: [M, R] -> [N*M, R] (Synchronize with Response expansion)
+    expanded_res_masks = clean_response_mask.repeat(N_prompts, 1)
+    
+    # Concatenate Input IDs
+    cross_input_ids = torch.cat([expanded_prompts, expanded_responses], dim=1)
+    
+    # Generate Global Mask
+    prompt_mask = (expanded_prompts != 0).long()
+    cross_attention_mask = torch.cat([prompt_mask, expanded_res_masks], dim=1)
+    
+    # Generate Position IDs
+    cross_position_ids = torch.cumsum(cross_attention_mask, dim=1) - 1
+    cross_position_ids.masked_fill_(cross_attention_mask == 0, 0)
+    
+    # ==========================
+    # 4. Actor Forward Pass
+    # ==========================
+    cross_batch = DataProto.from_dict(
+        tensors={
+            "input_ids": cross_input_ids,
+            "responses": expanded_responses,
+            "attention_mask": cross_attention_mask,
+            "position_ids": cross_position_ids
+        },
+        meta_info=batch.meta_info
+    )
+    
+    # Compute LogProb
+    # Note: actor_wg.compute_log_prob usually handles micro-batching automatically
+    log_probs_raw, _ = actor_wg.compute_log_prob(cross_batch)
+    
+    if log_probs_raw.shape[1] != R_len:
+        log_probs_raw = log_probs_raw[:, -R_len:]
+        
+    # ==========================
+    # 5. MI Formula Calculation
+    # ==========================
+    # Use the mask again to filter out LogProb noise from truncated parts (garbage after im_end)
+    valid_log_probs = log_probs_raw * expanded_res_masks
+    
+    # Sum: [N*M]
+    seq_log_probs = valid_log_probs.sum(dim=-1)
+    
+    # Reshape: [N, M] -> [M, N]
+    # Matrix[i, j] = LogProb(Response i | Prompt j)
+    # Note transpose: because we constructed with P_outer, R_inner
+    matrix_log_probs = seq_log_probs.view(N_prompts, M_responses).t()
+    
+    # Matched: Diagonal logic (Each Response i corresponds to its real Group)
+    matched = matrix_log_probs[torch.arange(M_responses), group_indices]
+    
+    # Marginal: LogSumExp over Prompts (Normalized to probability space)
+    # log( 1/N * sum_j exp(L_ij) ) = logsumexp - log(N)
+    marginal = torch.logsumexp(matrix_log_probs, dim=1) - math.log(N_prompts)
+    
+    mi_per_sample = matched - marginal
+    
+    # ==========================
+    # 6. Aggregate Results by Group
+    # ==========================
+    group_mi_results = {}
+    mi_numpy = mi_per_sample.detach().cpu().numpy()
+    
+    # Record global average
+    group_mi_results["collapse/mi_global"] = float(np.mean(mi_numpy))
+    
+    # Record average per Group
+    for gid in unique_groups:
+        mask = (group_ids == gid)
+        if mask.any():
+            # Use str(gid) as key
+            group_mi_results[f"collapse/mi_group_{gid}"] = float(np.mean(mi_numpy[mask]))
+            
+    return group_mi_results
 
-        if len(im_end_positions) > 0:
-            # Get the first im_end position
-            first_im_end_pos = im_end_positions[0].item()
-            # Zero out everything after the first im_end (exclusive, keep the im_end token)
-            if first_im_end_pos + 1 < seq_len:
-                first_turn_mask[i, first_im_end_pos + 1:] = 0
 
-    return first_turn_mask
-
-
-def group_mi_estimate(batch: DataProto, tokenizer=None) -> Dict[str, float]:
-    """Compute per-group Mutual Information (MI) estimate for the FIRST TURN only.
-
-    MI estimates how much the responses depend on their specific prompts.
-    High MI indicates prompt-specific responses (healthy).
-    Low MI indicates template collapse (responses are similar regardless of prompt).
-
-    Formula: MI = E[log p(r|x) - log p_mix(r)]
-    where:
-    - log p(r|x) = matched log prob (response under its true prompt)
-    - log p_mix(r) = marginal log prob (mixture over all prompts)
-
-    This function only considers the first turn of the response (up to the first
-    <|im_end|> token) to focus on the initial reasoning step.
-
-    Since we don't have cross-scoring (which would require running the model
-    N times), we approximate the marginal using the group-level mean log probs
-    as representatives of each prompt's likelihood.
-
-    Args:
-        batch: DataProto containing old_log_probs, response_mask, responses, and group identifiers.
-        tokenizer: Optional tokenizer to get im_end token id. Defaults to Qwen2-VL tokenizer.
-
-    Returns:
-        Dict mapping group_id to MI estimate for that group.
+def compute_group_mi_first_turn(batch: DataProto, actor_wg, tokenizer, **kwargs) -> Dict[str, float]:
     """
-    group_ids = _get_group_ids(batch)
-
-    if "old_log_probs" not in batch.batch:
-        raise ValueError("Batch must contain 'old_log_probs' for MI computation")
-
-    old_log_probs = batch.batch["old_log_probs"]
-    response_mask = batch.batch["response_mask"]
-    responses = batch.batch["responses"]
-
-    # Get im_end token id
-    if tokenizer is None:
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct", trust_remote_code=True)
-
-    im_end_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
-
-    # Convert to torch tensors if needed
-    if not isinstance(old_log_probs, torch.Tensor):
-        old_log_probs = torch.tensor(old_log_probs)
-    if not isinstance(response_mask, torch.Tensor):
-        response_mask = torch.tensor(response_mask)
-    if not isinstance(responses, torch.Tensor):
-        responses = torch.tensor(responses)
-
-    # Create first-turn-only mask
-    first_turn_mask = _get_first_turn_mask(responses, response_mask, im_end_token_id)
-
-    # Move to CPU for computation
-    old_log_probs = old_log_probs.detach().cpu()
-    first_turn_mask = first_turn_mask.detach().cpu()
-
-    # Compute per-sample mean log prob (normalized by first turn length)
-    mask_sum = first_turn_mask.sum(dim=-1).clamp(min=1e-8)
-    sample_log_probs = (old_log_probs * first_turn_mask).sum(dim=-1) / mask_sum
-    sample_log_probs = sample_log_probs.numpy()
-
-    # Get unique groups
-    unique_groups = np.unique(group_ids)
-    N = len(unique_groups)
-
-    if N < 2:
-        # Need at least 2 groups for meaningful MI
-        return {str(gid): 0.0 for gid in np.unique(group_ids)}
-
-    # Step 1: Compute mean log prob for each group (as group representative)
-    group_to_samples = defaultdict(list)
-    for i, gid in enumerate(group_ids):
-        group_to_samples[str(gid)].append(sample_log_probs[i])
-
-    group_mean_log_probs = {}
-    for gid, lps in group_to_samples.items():
-        group_mean_log_probs[gid] = np.mean(lps)
-
-    # Step 2: Compute marginal for each sample using logsumexp over group means
-    # marginal(r) ≈ logsumexp(group_mean_log_probs) - log(N)
-    # This approximates the mixture: p_mix(r) = (1/N) * sum_j p(r|x_j)
-    group_means_array = np.array(list(group_mean_log_probs.values()))
-
-    # For each sample, compute its MI contribution
-    # matched[i] = sample_log_probs[i]
-    # marginal[i] ≈ logsumexp(group_means) - log(N)
-    # But we want per-sample marginal, so we use logsumexp properly
-
-    # The marginal for sample i is: log(1/N * sum_j exp(log p(r_i|x_j)))
-    # Since we don't have cross-scores, we approximate:
-    # For sample i in group g, we use group_mean_log_probs as proxy for cross-scores
-
-    # Per-sample marginal using group means as proxies
-    marginal_global = np.logaddexp.reduce(group_means_array) - math.log(N)
-
-    # Step 3: Compute per-group MI
-    # For each sample: mi = matched - marginal
-    # For each group: mean over samples in that group
-    group_mi = defaultdict(list)
-    for i, gid in enumerate(group_ids):
-        matched = sample_log_probs[i]
-        # MI contribution for this sample
-        mi_sample = matched - marginal_global
-        group_mi[str(gid)].append(mi_sample)
-
-    result = {}
-    for gid, mis in group_mi.items():
-        result[gid] = float(np.mean(mis))
-
-    return result
+    [Entry Point] 
+    
+    Args:
+        batch: Original DataProto (containing full multi-turn conversations)
+        actor_wg: Actor WorkerGroup (used for calculating log_prob)
+        tokenizer: Used to identify the im_end token
+        
+    Returns:
+        Dict: {group_id: mi_value}
+    """
+    # 1. Preprocessing: Clean Batch, truncate to First Turn (O(M))
+    # This function does not change physical data shape, only modifies the mask
+    cleaned_batch = get_first_turn_batch(batch, tokenizer)
+    
+    # 2. Calculation: Cross-Scoring on the mixed Batch (O(N*M))
+    # And split results by Group at the end
+    mi_metrics = compute_mi(cleaned_batch, actor_wg)
+    
+    return mi_metrics
 
 
 # Registry of all available per-group metrics
@@ -417,5 +426,5 @@ REGISTERED_METRICS = {
     "response/length": group_response_len_mean,
     # "advantage/mean": group_advantage_mean,
     # "actor/log_prob": group_old_log_prob_mean,
-    "collapse/mi": group_mi_estimate,
+    "collapse/mi": compute_group_mi_first_turn,
 }

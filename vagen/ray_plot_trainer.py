@@ -467,7 +467,7 @@ class RayPlotTrainer(RayPPOTrainer):
 
                     for metric_name, metric_fn in REGISTERED_METRICS.items():
                         try:
-                            per_group_metrics[metric_name] = metric_fn(batch)
+                            metric_fn(batch, actor_wg=self.actor_rollout_wg, tokenizer=self.tokenizer)
                         except Exception as e:
                             print(f"Warning: Failed to compute metric '{metric_name}': {e}")
 
