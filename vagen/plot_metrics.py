@@ -4,6 +4,7 @@ Per-group metrics for plotting correlation analysis.
 Each metric function takes a DataProto batch and returns Dict[group_id, float].
 """
 
+import math
 import torch
 import numpy as np
 from collections import defaultdict
@@ -267,6 +268,147 @@ def group_old_log_prob_mean(batch: DataProto) -> Dict[str, float]:
     return result
 
 
+def _get_first_turn_mask(responses: torch.Tensor, response_mask: torch.Tensor, im_end_token_id: int) -> torch.Tensor:
+    """Create a mask that only covers the first turn (up to first <|im_end|> token).
+
+    Args:
+        responses: Response token ids, shape (batch_size, seq_len)
+        response_mask: Original response mask, shape (batch_size, seq_len)
+        im_end_token_id: Token id for <|im_end|>
+
+    Returns:
+        Modified mask that zeros out everything after the first <|im_end|> token.
+    """
+    batch_size, seq_len = responses.shape
+    first_turn_mask = response_mask.clone()
+
+    for i in range(batch_size):
+        # Find positions where token equals im_end_token_id
+        im_end_positions = (responses[i] == im_end_token_id).nonzero(as_tuple=True)[0]
+
+        if len(im_end_positions) > 0:
+            # Get the first im_end position
+            first_im_end_pos = im_end_positions[0].item()
+            # Zero out everything after the first im_end (exclusive, keep the im_end token)
+            if first_im_end_pos + 1 < seq_len:
+                first_turn_mask[i, first_im_end_pos + 1:] = 0
+
+    return first_turn_mask
+
+
+def group_mi_estimate(batch: DataProto, tokenizer=None) -> Dict[str, float]:
+    """Compute per-group Mutual Information (MI) estimate for the FIRST TURN only.
+
+    MI estimates how much the responses depend on their specific prompts.
+    High MI indicates prompt-specific responses (healthy).
+    Low MI indicates template collapse (responses are similar regardless of prompt).
+
+    Formula: MI = E[log p(r|x) - log p_mix(r)]
+    where:
+    - log p(r|x) = matched log prob (response under its true prompt)
+    - log p_mix(r) = marginal log prob (mixture over all prompts)
+
+    This function only considers the first turn of the response (up to the first
+    <|im_end|> token) to focus on the initial reasoning step.
+
+    Since we don't have cross-scoring (which would require running the model
+    N times), we approximate the marginal using the group-level mean log probs
+    as representatives of each prompt's likelihood.
+
+    Args:
+        batch: DataProto containing old_log_probs, response_mask, responses, and group identifiers.
+        tokenizer: Optional tokenizer to get im_end token id. Defaults to Qwen2-VL tokenizer.
+
+    Returns:
+        Dict mapping group_id to MI estimate for that group.
+    """
+    group_ids = _get_group_ids(batch)
+
+    if "old_log_probs" not in batch.batch:
+        raise ValueError("Batch must contain 'old_log_probs' for MI computation")
+
+    old_log_probs = batch.batch["old_log_probs"]
+    response_mask = batch.batch["response_mask"]
+    responses = batch.batch["responses"]
+
+    # Get im_end token id
+    if tokenizer is None:
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct", trust_remote_code=True)
+
+    im_end_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+
+    # Convert to torch tensors if needed
+    if not isinstance(old_log_probs, torch.Tensor):
+        old_log_probs = torch.tensor(old_log_probs)
+    if not isinstance(response_mask, torch.Tensor):
+        response_mask = torch.tensor(response_mask)
+    if not isinstance(responses, torch.Tensor):
+        responses = torch.tensor(responses)
+
+    # Create first-turn-only mask
+    first_turn_mask = _get_first_turn_mask(responses, response_mask, im_end_token_id)
+
+    # Move to CPU for computation
+    old_log_probs = old_log_probs.detach().cpu()
+    first_turn_mask = first_turn_mask.detach().cpu()
+
+    # Compute per-sample mean log prob (normalized by first turn length)
+    mask_sum = first_turn_mask.sum(dim=-1).clamp(min=1e-8)
+    sample_log_probs = (old_log_probs * first_turn_mask).sum(dim=-1) / mask_sum
+    sample_log_probs = sample_log_probs.numpy()
+
+    # Get unique groups
+    unique_groups = np.unique(group_ids)
+    N = len(unique_groups)
+
+    if N < 2:
+        # Need at least 2 groups for meaningful MI
+        return {str(gid): 0.0 for gid in np.unique(group_ids)}
+
+    # Step 1: Compute mean log prob for each group (as group representative)
+    group_to_samples = defaultdict(list)
+    for i, gid in enumerate(group_ids):
+        group_to_samples[str(gid)].append(sample_log_probs[i])
+
+    group_mean_log_probs = {}
+    for gid, lps in group_to_samples.items():
+        group_mean_log_probs[gid] = np.mean(lps)
+
+    # Step 2: Compute marginal for each sample using logsumexp over group means
+    # marginal(r) ≈ logsumexp(group_mean_log_probs) - log(N)
+    # This approximates the mixture: p_mix(r) = (1/N) * sum_j p(r|x_j)
+    group_means_array = np.array(list(group_mean_log_probs.values()))
+
+    # For each sample, compute its MI contribution
+    # matched[i] = sample_log_probs[i]
+    # marginal[i] ≈ logsumexp(group_means) - log(N)
+    # But we want per-sample marginal, so we use logsumexp properly
+
+    # The marginal for sample i is: log(1/N * sum_j exp(log p(r_i|x_j)))
+    # Since we don't have cross-scores, we approximate:
+    # For sample i in group g, we use group_mean_log_probs as proxy for cross-scores
+
+    # Per-sample marginal using group means as proxies
+    marginal_global = np.logaddexp.reduce(group_means_array) - math.log(N)
+
+    # Step 3: Compute per-group MI
+    # For each sample: mi = matched - marginal
+    # For each group: mean over samples in that group
+    group_mi = defaultdict(list)
+    for i, gid in enumerate(group_ids):
+        matched = sample_log_probs[i]
+        # MI contribution for this sample
+        mi_sample = matched - marginal_global
+        group_mi[str(gid)].append(mi_sample)
+
+    result = {}
+    for gid, mis in group_mi.items():
+        result[gid] = float(np.mean(mis))
+
+    return result
+
+
 # Registry of all available per-group metrics
 REGISTERED_METRICS = {
     "reward/variance": group_reward_variance,
@@ -275,4 +417,5 @@ REGISTERED_METRICS = {
     "response/length": group_response_len_mean,
     # "advantage/mean": group_advantage_mean,
     # "actor/log_prob": group_old_log_prob_mean,
+    "collapse/mi": group_mi_estimate,
 }

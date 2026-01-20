@@ -3,16 +3,16 @@
 set -x
 
 PROJECT_NAME="verl_vagen"
-EXPERIMENT_NAME="grpo_qwen25vl3b-0"
+EXPERIMENT_NAME="grpo_qwen25vl3b-500"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
 EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
-DATASET_TRAIN=${SCRIPTDIR}/train_sokoban_vision.yaml
+DATASET_TRAIN=${SCRIPTDIR}/val_sokoban_vision.yaml
 DATASET_VAL=${SCRIPTDIR}/val_sokoban_vision.yaml
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent.yaml
-REF_MODEL_PATH=../Qwen2.5-VL-3B-Instruct
+REF_MODEL_PATH=/projects/p32476/projects/viewsuite/VAGEN/exps/verl_vagen/grpo_qwen25vl3b/verl_checkpoints/global_step_500/actor/huggingface
 mkdir -p ${EXPERIMENT_DIR}
 
 
