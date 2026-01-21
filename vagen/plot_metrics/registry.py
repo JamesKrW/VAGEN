@@ -1,5 +1,6 @@
 # Registry of all available per-group metrics
 from .mutual_inforamtion_single_turn import compute_group_mi_first_turn
+from .mutual_inforamtion_multi_turn import compute_group_mi_multi_turn
 from .plot_metrics import group_reward_variance, group_response_len_mean, group_entropy_mean
 REGISTERED_METRICS = {
     "reward variance": group_reward_variance,
@@ -8,5 +9,6 @@ REGISTERED_METRICS = {
     "response length": group_response_len_mean,
     # "advantage/mean": group_advantage_mean,
     # "actor/log_prob": group_old_log_prob_mean,
+    "MI Multi Turn": compute_group_mi_multi_turn,
     "MI Single Turn": compute_group_mi_first_turn,
 }
