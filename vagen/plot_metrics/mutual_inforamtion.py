@@ -3,7 +3,7 @@ import math
 import numpy as np
 import torch
 import logging
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from verl import DataProto
 
 # Initialize logger for error reporting
@@ -108,6 +108,42 @@ def get_first_turn_batch(batch: DataProto, tokenizer) -> DataProto:
          new_batch.batch["loss_mask"] *= tail_mask
 
     return new_batch
+
+
+# =========================================================================
+# 1.5 Keep One Sample Per Group
+# =========================================================================
+def get_unique_group_idx_dp(batch: DataProto) -> DataProto:
+    """
+    Keep only the first sample for each group_idx (or uid) in order.
+    """
+    group_ids = batch.non_tensor_batch.get("group_idx") or batch.non_tensor_batch.get("uid")
+    if group_ids is None:
+        return batch
+
+    if isinstance(group_ids, np.ndarray):
+        group_list = group_ids.tolist()
+    else:
+        group_list = list(group_ids)
+
+    seen = set()
+    keep_indices = []
+    for i, gid in enumerate(group_list):
+        try:
+            key = gid
+            if key in seen:
+                continue
+            seen.add(key)
+        except TypeError:
+            key = str(gid)
+            if key in seen:
+                continue
+            seen.add(key)
+        keep_indices.append(i)
+
+    if len(keep_indices) == len(group_list):
+        return batch
+    return batch[keep_indices]
 
 
 # =========================================================================
@@ -592,6 +628,7 @@ def compute_group_mi_first_turn(batch: DataProto, actor_wg, tokenizer, processor
     1. Clean Batch: Logically truncate to first turn (O(M)).
     2. Compute MI: Perform chunked cross-scoring (O(M*N)).
     """
+    batch = get_unique_group_idx_dp(batch)
     logger.info("[MI Debug][Entry] Starting MI compute for batch size=%d", batch.batch["responses"].shape[0])
     cleaned_batch = get_first_turn_batch(batch, tokenizer)
     mi_metrics = compute_mi(cleaned_batch, actor_wg, tokenizer=tokenizer, processor=processor)
