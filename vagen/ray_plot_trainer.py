@@ -462,7 +462,7 @@ class RayPlotTrainer(RayPPOTrainer):
                         metrics.update(custom_train_metrics)
 
                     # stop here for plot
-                    from .plot_metrics import REGISTERED_METRICS
+                    from .plot_metrics.registry import REGISTERED_METRICS
                     per_group_metrics = {}  # key: metric name, value: Dict[group_id, float]
 
                     for metric_name, metric_fn in REGISTERED_METRICS.items():
