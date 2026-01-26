@@ -3,7 +3,7 @@
 set -x
 
 PROJECT_NAME="verl_vagen"
-EXPERIMENT_NAME="grpo_qwen25vl3b"
+EXPERIMENT_NAME="grpo_qwen25vl3b_filter"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
@@ -76,6 +76,9 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     critic.ppo_micro_batch_size_per_gpu=1 \
     critic.model.fsdp_config.param_offload=True \
     critic.model.fsdp_config.optimizer_offload=True \
+    filter.enable=True \
+    filter.name=reward_variance \
+    +filter.filter_kwargs.topk=0.2 \
     trainer.total_epochs=10 2>&1 | \
     tee ${EXPERIMENT_DIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log >(tee ${BASEDIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log >/dev/null)
 # actor_rollout_ref.model.lora_rank=8 \
