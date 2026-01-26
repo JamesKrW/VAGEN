@@ -228,6 +228,79 @@ def _estimate_image_patches_from_grid(image_grid_thw: torch.Tensor) -> List[int]
     return grid_patches
 
 
+def _align_multimodal_tokens_and_features(
+    cross_input_ids: torch.Tensor,
+    cross_attention_mask: torch.Tensor,
+    single_image_data: dict,
+    tokenizer,
+    merge_size: Optional[int],
+    processor,
+    pad_token_id: int,
+    logger,
+) -> dict:
+    """
+    Validate and align image tokens with image features.
+    Steps:
+      1) Validate counts.
+      2) Truncate features if features > tokens.
+      3) Pad extra image tokens if tokens > features.
+      4) Re-validate and log.
+    """
+    if merge_size is None or single_image_data is None:
+        return single_image_data
+    image_token_id = _get_image_token_id(tokenizer, processor=processor)
+    if image_token_id is None:
+        return single_image_data
+    image_grid_thw = single_image_data.get("image_grid_thw")
+    if image_grid_thw is None:
+        return single_image_data
+    if not torch.is_tensor(image_grid_thw):
+        image_grid_thw = torch.as_tensor(image_grid_thw)
+
+    feature_tokens, _ = _estimate_image_tokens_from_grid(image_grid_thw, merge_size)
+    token_counts = (cross_input_ids == image_token_id).sum(dim=1).tolist()
+    max_tokens = int(max(token_counts)) if token_counts else 0
+
+    # Step 2: Truncate features if needed
+    if feature_tokens > max_tokens and max_tokens > 0:
+        ref_idx = int(token_counts.index(max_tokens))
+        single_image_data = _truncate_multi_modal_inputs_for_tokens(
+            single_image_data,
+            cross_input_ids[ref_idx],
+            tokenizer,
+            merge_size,
+            processor,
+            logger,
+            pad_token_id,
+        )
+        image_grid_thw = single_image_data.get("image_grid_thw")
+        if image_grid_thw is not None and not torch.is_tensor(image_grid_thw):
+            image_grid_thw = torch.as_tensor(image_grid_thw)
+        if image_grid_thw is not None:
+            feature_tokens, _ = _estimate_image_tokens_from_grid(image_grid_thw, merge_size)
+
+    # Step 3: Pad extra image tokens if needed
+    if feature_tokens > 0:
+        for i, n_tokens in enumerate(token_counts):
+            if n_tokens <= feature_tokens:
+                continue
+            positions = torch.nonzero(cross_input_ids[i] == image_token_id, as_tuple=False).flatten()
+            extra = positions[feature_tokens:]
+            if extra.numel() > 0:
+                cross_input_ids[i, extra] = pad_token_id
+                cross_attention_mask[i, extra] = 0
+
+    # Step 4: Re-validate
+    new_counts = (cross_input_ids == image_token_id).sum(dim=1)
+    if (new_counts > feature_tokens).any():
+        logger.warning(
+            "[MI Debug][MM] mismatch after align: feature_tokens=%d max_tokens=%d",
+            int(feature_tokens),
+            int(new_counts.max().item()),
+        )
+    return single_image_data
+
+
 def _truncate_multi_modal_inputs_for_tokens(
     single_image_data: dict,
     input_ids: torch.Tensor,
@@ -235,6 +308,7 @@ def _truncate_multi_modal_inputs_for_tokens(
     merge_size: Optional[int],
     processor,
     logger,
+    pad_token_id: int,
 ) -> dict:
     if merge_size is None:
         logger.warning("[MI Debug][MM] merge_size missing; skip multi-modal alignment.")
@@ -348,6 +422,24 @@ def _truncate_multi_modal_inputs_for_tokens(
         )
         return new_data
 
+    if total_tokens < n_image_tokens:
+        # Reduce image token count by padding extra image tokens in input_ids.
+        image_token_id = _get_image_token_id(tokenizer, processor=processor)
+        if image_token_id is None:
+            logger.warning("[MI Debug][MM] image_token_id missing; cannot pad extra image tokens.")
+            return single_image_data
+        image_positions = torch.nonzero(input_ids == image_token_id, as_tuple=False).flatten()
+        if image_positions.numel() > total_tokens:
+            extra = image_positions[total_tokens:]
+            input_ids[extra] = pad_token_id
+            logger.warning(
+                "[MI Debug][MM] padded extra image tokens: tokens=%d features=%d padded=%d",
+                n_image_tokens,
+                total_tokens,
+                int(extra.numel()),
+            )
+        return single_image_data
+
     logger.error(
         "[MI Debug][MM] token mismatch cannot be fixed by truncation: input_ids=%d grid_est=%d",
         n_image_tokens,
@@ -368,6 +460,11 @@ def compute_mi(batch: DataProto, actor_wg, tokenizer=None, processor=None) -> Di
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     merge_size = _get_spatial_merge_size(actor_wg, processor=processor)
+    pad_token_id = 0
+    if tokenizer is not None and hasattr(tokenizer, "pad_token_id") and tokenizer.pad_token_id is not None:
+        pad_token_id = tokenizer.pad_token_id
+    if isinstance(pad_token_id, list):
+        pad_token_id = pad_token_id[0] if pad_token_id else 0
     
     # --- A. Basic Information Extraction ---
     original_responses = batch.batch["responses"]   # [M, R] (Already physically padded)
@@ -428,10 +525,20 @@ def compute_mi(batch: DataProto, actor_wg, tokenizer=None, processor=None) -> Di
         
         # 1. Expand Current Prompt (1 -> M)
         curr_prompt_ids = unique_prompt_input_ids[j:j+1].expand(M_responses, -1)
-        cross_input_ids = torch.cat([curr_prompt_ids, original_responses], dim=1)
+    cross_input_ids = torch.cat([curr_prompt_ids, original_responses], dim=1)
+        # Ensure masked response tokens (incl. image tokens) do not count as image tokens
+        image_token_id = _get_image_token_id(tokenizer, processor=processor)
+        if image_token_id is not None:
+            masked_positions = clean_response_mask == 0
+            if masked_positions.any():
+                response_slice = cross_input_ids[:, -R_len:]
+                image_masked = (response_slice == image_token_id) & masked_positions
+                if image_masked.any():
+                    response_slice = response_slice.masked_fill(image_masked, pad_token_id)
+                    cross_input_ids[:, -R_len:] = response_slice
         
         # 2. Prepare Masks
-        prompt_mask = (curr_prompt_ids != 0).long()
+        prompt_mask = (curr_prompt_ids != pad_token_id).long()
         cross_attention_mask = torch.cat([prompt_mask, clean_response_mask], dim=1)
         
         # 3. Handle Position IDs
@@ -471,6 +578,7 @@ def compute_mi(batch: DataProto, actor_wg, tokenizer=None, processor=None) -> Di
                     merge_size,
                     processor,
                     logger,
+                    pad_token_id,
                 )
 
             # Construct List: Replicate the SAME image M times
@@ -487,6 +595,22 @@ def compute_mi(batch: DataProto, actor_wg, tokenizer=None, processor=None) -> Di
             cross_imgs = np.array(cross_imgs_list, dtype=object)
             
             cross_non_tensor_batch["multi_modal_inputs"] = cross_imgs
+
+            # Validate and align tokens/features before compute_log_prob
+            single_image_data = _align_multimodal_tokens_and_features(
+                cross_input_ids,
+                cross_attention_mask,
+                single_image_data,
+                tokenizer,
+                merge_size,
+                processor,
+                pad_token_id,
+                logger,
+            )
+            if isinstance(single_image_data, dict):
+                cross_non_tensor_batch["multi_modal_inputs"] = np.array(
+                    [single_image_data] * M_responses, dtype=object
+                )
         if j == 0:
             logger.info(
                 "[MI Debug][Step2] j=%d cross_input_ids=%s cross_attention_mask=%s cross_position_ids=%s multi_modal_type=%s",

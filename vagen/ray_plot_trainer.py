@@ -1,4 +1,5 @@
 from .ray_trainer import *
+import torch
 import sys
 import os
 import re
@@ -461,6 +462,34 @@ class RayPlotTrainer(RayPPOTrainer):
                         custom_train_metrics = compute_custom_metrics(batch, prefix="custom_metrics/train")
                         metrics.update(custom_train_metrics)
 
+                    # debug: log batch shapes for plot run
+                    try:
+                        b = batch.batch
+                        nt = batch.non_tensor_batch
+                        print(
+                            f"[Plot Debug] batch_size={len(batch)} "
+                            f"tensor_keys={list(b.keys())} non_tensor_keys={list(nt.keys())}"
+                        )
+                        for k, v in b.items():
+                            if torch.is_tensor(v):
+                                print(
+                                    f"[Plot Debug][tensor] {k} shape={tuple(v.shape)} "
+                                    f"dtype={v.dtype} device={v.device}"
+                                )
+                            else:
+                                print(f"[Plot Debug][tensor] {k} type={type(v)}")
+                        for k, v in nt.items():
+                            if hasattr(v, "shape"):
+                                print(f"[Plot Debug][non_tensor] {k} shape={v.shape} type={type(v)}")
+                            else:
+                                try:
+                                    v_len = len(v)
+                                except Exception:
+                                    v_len = "n/a"
+                                print(f"[Plot Debug][non_tensor] {k} len={v_len} type={type(v)}")
+                    except Exception as e:
+                        print(f"[Plot Debug] Failed to log batch shapes: {e}")
+
                     # stop here for plot
                     from .plot_metrics.registry import REGISTERED_METRICS
                     per_group_metrics = {}  # key: metric name, value: Dict[group_id, float]
@@ -478,5 +507,5 @@ class RayPlotTrainer(RayPPOTrainer):
 
                     # plot correlation of per group metrics and save to self.config.trainer.default_local_dir
                     self._plot_per_group_metrics_correlation(per_group_metrics)
-
+                    print("Plotting completed. Exiting now.")
                     sys.exit(0)
