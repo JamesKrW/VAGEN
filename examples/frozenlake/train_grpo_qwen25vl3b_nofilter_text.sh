@@ -3,14 +3,14 @@
 set -x
 
 PROJECT_NAME="ragen-exp"
-EXPERIMENT_NAME="grpo_qwen25vl3b_filter"
+EXPERIMENT_NAME="frozenlake_grpo_qwen25vl3b_nofilter_text"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
 EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
-DATASET_TRAIN=${SCRIPTDIR}/train_sokoban_vision.yaml
-DATASET_VAL=${SCRIPTDIR}/val_sokoban_vision.yaml
+DATASET_TRAIN=${SCRIPTDIR}/train_frozenlake_text.yaml
+DATASET_VAL=${SCRIPTDIR}/val_frozenlake_text.yaml
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent.yaml
 REF_MODEL_PATH=Qwen/Qwen2.5-VL-3B-Instruct
 mkdir -p ${EXPERIMENT_DIR}
@@ -59,14 +59,16 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     trainer.val_before_train=True \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
-    trainer.save_freq=100 \
+    trainer.save_freq=40 \
     trainer.test_freq=20 \
     trainer.project_name=${PROJECT_NAME} \
     trainer.experiment_name=${EXPERIMENT_NAME} \
     trainer.default_local_dir=${SAVE_CHECKPOINT_DIR} \
     trainer.validation_data_dir=${EXPERIMENT_DIR}/validation \
-    trainer.rollout_data_dir=${EXPERIMENT_DIR}/rollout_data \
+    trainer.rollout_data_dir=null \
     trainer.log_val_generations=32 \
+    trainer.max_actor_ckpt_to_keep=1 \
+    trainer.max_critic_ckpt_to_keep=1 \
     data.max_prompt_length=1000 \
     data.max_response_length=4000 \
     critic.optim.lr=1e-5 \
@@ -76,12 +78,6 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     critic.ppo_micro_batch_size_per_gpu=1 \
     critic.model.fsdp_config.param_offload=True \
     critic.model.fsdp_config.optimizer_offload=True \
-    filter.enable=True \
-    filter.name=reward_variance \
-    +filter.filter_kwargs.topk=0.2 \
-    trainer.total_epochs=10 2>&1 | \
+    filter.enable=False \
+    trainer.total_training_steps=400 2>&1 | \
     tee ${EXPERIMENT_DIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log >(tee ${BASEDIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log >/dev/null)
-# actor_rollout_ref.model.lora_rank=8 \
-#     actor_rollout_ref.model.lora_alpha=16 \
-#     actor_rollout_ref.rollout.load_format="safetensors" \
-#     actor_rollout_ref.model.target_modules="all-linear" \

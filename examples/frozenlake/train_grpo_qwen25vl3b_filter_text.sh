@@ -3,14 +3,14 @@
 set -x
 
 PROJECT_NAME="ragen-exp"
-EXPERIMENT_NAME="grpo_qwen25vl3b_filter"
+EXPERIMENT_NAME="frozenlake_grpo_qwen25vl3b_filter_text"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
 EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
-DATASET_TRAIN=${SCRIPTDIR}/train_sokoban_vision.yaml
-DATASET_VAL=${SCRIPTDIR}/val_sokoban_vision.yaml
+DATASET_TRAIN=${SCRIPTDIR}/train_frozenlake_text.yaml
+DATASET_VAL=${SCRIPTDIR}/val_frozenlake_text.yaml
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent.yaml
 REF_MODEL_PATH=Qwen/Qwen2.5-VL-3B-Instruct
 mkdir -p ${EXPERIMENT_DIR}
@@ -81,7 +81,3 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     +filter.filter_kwargs.topk=0.2 \
     trainer.total_epochs=10 2>&1 | \
     tee ${EXPERIMENT_DIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log >(tee ${BASEDIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log >/dev/null)
-# actor_rollout_ref.model.lora_rank=8 \
-#     actor_rollout_ref.model.lora_alpha=16 \
-#     actor_rollout_ref.rollout.load_format="safetensors" \
-#     actor_rollout_ref.model.target_modules="all-linear" \
