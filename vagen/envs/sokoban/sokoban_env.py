@@ -246,7 +246,7 @@ class Sokoban(GymImageEnv):
         )
         text_rows = []
         for row in room_state:
-            text_row = "".join(self.GRID_LOOKUP.get(int(cell), "?") for cell in row)
+            text_row = " ".join(self.GRID_LOOKUP.get(int(cell), "?") for cell in row)
             text_rows.append(text_row)
         return "\n".join(text_rows)
 
