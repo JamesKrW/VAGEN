@@ -27,13 +27,13 @@ class FrozenLakeEnvConfig:
     slip_prob: float = 0.0             # Custom slip probability (0.02 = 2% chance to slip)
     p: float = 0.8                     # Probability of frozen tile when generating random map
     render_mode: str = "text"          # "text" or "vision"
-    max_actions_per_step: int = 3      # Max actions per step
+    max_actions_per_step: int = 5      # Max actions per step
     action_sep: str = ","              # Separator between actions
     image_placeholder: str = "<image>" # Placeholder for vision mode
     use_example_in_sys_prompt: bool = True  # Whether to add example system prompt
     prompt_format: str = "free_think"  # "free_think" or "wm"
-    format_reward: float = 0.1         # Reward for following the format correctly
-    success_reward: float = 10.0       # Reward for reaching the goal
+    format_reward: float = 0.02         # Reward for following the format correctly
+    success_reward: float = 1.0       # Reward for reaching the goal
 
 
 class FrozenLake(GymImageEnv):

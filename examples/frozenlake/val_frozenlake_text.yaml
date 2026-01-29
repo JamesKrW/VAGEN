@@ -10,5 +10,5 @@ envs:
       size: 4
       p: 0.8
       is_slippery: false
-      slip_prob: 0.02
-      max_actions_per_step: 2
+      slip_prob: 0.0
+      max_actions_per_step: 5
