@@ -3,15 +3,15 @@ import copy
 from PIL import Image
 from gymnasium.envs.toy_text.frozen_lake import FrozenLakeEnv as GymFrozenLakeEnv
 
-from .utils.prompt import (
+from vagen.envs.frozenlake.utils.prompt import (
     action_template,
     format_prompt,
     init_observation_template,
     system_prompt,
 )
-from .utils.utils import parse_response, numpy_to_pil, generate_random_map
+from vagen.envs.frozenlake.utils.utils import parse_response, numpy_to_pil, generate_random_map
 
-from ..gym_image_env import GymImageEnv
+from vagen.envs.gym_image_env import GymImageEnv
 
 import asyncio
 from dataclasses import dataclass
@@ -337,7 +337,7 @@ if __name__ == "__main__":
         render_mode: str = "vision",
         size: int = 4,
         is_slippery: bool = False,
-        max_actions_per_step: int = 2,
+        max_actions_per_step: int = 4,
         save_path: str = "./test_frozenlake",
         prompt_format: str = "free_think",
     ):

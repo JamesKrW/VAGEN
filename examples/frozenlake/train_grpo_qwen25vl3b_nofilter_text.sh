@@ -7,7 +7,7 @@ EXPERIMENT_NAME="frozenlake_grpo_qwen25vl3b_nofilter_text"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
-EXPERIMENT_DIR=/mnt/disk1/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
+EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
 DATASET_TRAIN=${SCRIPTDIR}/train_frozenlake_text.yaml
 DATASET_VAL=${SCRIPTDIR}/val_frozenlake_text.yaml
@@ -64,7 +64,7 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     trainer.project_name=${PROJECT_NAME} \
     trainer.experiment_name=${EXPERIMENT_NAME} \
     trainer.default_local_dir=${SAVE_CHECKPOINT_DIR} \
-    trainer.validation_data_dir=${EXPERIMENT_DIR}/validation \
+    trainer.validation_data_dir=null \
     trainer.rollout_data_dir=null \
     trainer.log_val_generations=32 \
     trainer.max_actor_ckpt_to_keep=1 \
