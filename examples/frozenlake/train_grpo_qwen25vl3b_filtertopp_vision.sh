@@ -7,7 +7,7 @@ EXPERIMENT_NAME="frozenlake_grpo_qwen25vl3b_filter_vision"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
-EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
+EXPERIMENT_DIR=/mnt/disk1/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
 DATASET_TRAIN=${SCRIPTDIR}/train_frozenlake_vision.yaml
 DATASET_VAL=${SCRIPTDIR}/val_frozenlake_vision.yaml
@@ -59,7 +59,7 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     trainer.val_before_train=True \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
-    trainer.save_freq=401 \
+    trainer.save_freq=40 \
     trainer.test_freq=20 \
     trainer.project_name=${PROJECT_NAME} \
     trainer.experiment_name=${EXPERIMENT_NAME} \
