@@ -3,7 +3,7 @@
 set -x
 
 PROJECT_NAME="vagen_experiments"
-EXPERIMENT_NAME="mindcube_grpo_qwen25vl7b"
+EXPERIMENT_NAME="mindcube_grpo_qwen25vl3b"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
