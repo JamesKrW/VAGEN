@@ -12,7 +12,7 @@ SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
 DATASET_TRAIN=${SCRIPTDIR}/train.yaml
 DATASET_VAL=${SCRIPTDIR}/val.yaml
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent.yaml
-REF_MODEL_PATH=Qwen/Qwen2.5-VL-7B-Instruct
+REF_MODEL_PATH=Qwen/Qwen2.5-VL-3B-Instruct
 mkdir -p ${EXPERIMENT_DIR}
 
 
@@ -57,7 +57,7 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.val_before_train=True \
-    trainer.n_gpus_per_node=4 \
+    trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=10 \
     trainer.test_freq=10 \
@@ -75,6 +75,10 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     critic.model.path=${REF_MODEL_PATH} \
     critic.model.enable_gradient_checkpointing=True \
     critic.ppo_micro_batch_size_per_gpu=1 \
+    +actor_rollout_ref.rollout.engine_kwargs.sglang.attention_backend=flashinfer \
+    +actor_rollout_ref.rollout.engine_kwargs.sglang.mm_attention_backend=triton_attn \
+    actor_rollout_ref.ref.strategy=fsdp2 \
+    actor_rollout_ref.actor.strategy=fsdp2 \
     critic.model.fsdp_config.param_offload=True \
     critic.model.fsdp_config.optimizer_offload=True \
     trainer.total_training_steps=400 2>&1 | \
