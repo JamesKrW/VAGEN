@@ -2,7 +2,7 @@
 
 set -x
 
-PROJECT_NAME="verl_vagen"
+PROJECT_NAME="vagen_experiments"
 EXPERIMENT_NAME="train_ae_from_sft_grpo_0"
 
 BASEDIR=$(pwd)

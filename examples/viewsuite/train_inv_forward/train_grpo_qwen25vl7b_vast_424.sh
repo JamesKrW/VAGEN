@@ -3,7 +3,7 @@
 set -x
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-PROJECT_NAME="verl_vagen"
+PROJECT_NAME="vagen_experiments"
 EXPERIMENT_NAME="fwd_inv_grpo_qwen25vl7b_424"
 
 BASEDIR=$(pwd)
