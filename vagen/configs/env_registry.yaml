@@ -8,6 +8,7 @@ env_registry:
   ViewSpatialNoToolGym: view_suite.envs.view_spatial_bench.gym_view_spatial_no_tool.ViewSpatialNoToolGym
   VSIBenchNoToolGym: view_suite.envs.vsi_bench.gym_vsi_no_tool.VSIBenchNoToolGym
   MindCubeNoToolGym: view_suite.envs.mindcube.gym_mindcube_no_tool.MindCubeNoToolGym
+  VSITrainNoToolGym: view_suite.envs.vsi_bench_train.gym_vsi_train_no_tool.VSITrainNoToolGym
   ForwardDynamics: view_suite.envs.scannet_proxy_task.forward_dynamics.ForwardDynamics
   ActiveExploration: view_suite.envs.scannet_proxy_task.active_exploration.ActiveExploration
   InverseDynamics: view_suite.envs.scannet_proxy_task.inverse_dynamics.InverseDynamics
