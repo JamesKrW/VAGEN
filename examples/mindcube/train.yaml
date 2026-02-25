@@ -9,6 +9,6 @@ envs:
       data_path: ${oc.env:HOME}/projects/viewsuite/data/mindcube
       split: train
       image_size: [512,512]
-      eval_mode: true
+      format: eval_mode
       format_reward: 0.2
       answer_reward: 0.8

@@ -9,7 +9,7 @@ envs:
     config:
       jsonl_path: ${oc.env:HOME}/projects/viewsuite/data/viewsuite_5k/active_explore_dev_filter.jsonl
       image_size: [512,512]
-      eval_mode: true
+      format: eval_mode
       use_example_in_sys_prompt: false
       client_url_file_path: ${oc.env:HOME}/projects/viewsuite/client_url.txt
       render_backend: client
@@ -25,7 +25,7 @@ envs:
     config:
       jsonl_path: ${oc.env:HOME}/projects/viewsuite/data/viewsuite_5k/forward_dynamics_dev_filter.jsonl
       image_size: [512,512]
-      eval_mode: true
+      format: eval_mode
       format_reward: 0.0
       answer_reward: 0.1
 
@@ -38,6 +38,6 @@ envs:
     config:
       jsonl_path: ${oc.env:HOME}/projects/viewsuite/data/viewsuite_5k/inverse_dynamics_dev_filter.jsonl
       image_size: [512,512]
-      eval_mode: true
+      format: eval_mode
       format_reward: 0.0
       answer_reward: 0.1
