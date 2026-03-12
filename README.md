@@ -66,6 +66,19 @@ We frame multi-turn VLM agentic tasks as a Partially Observable Markov Decision 
 ## News
 **[2026/02]** We have migrated the `main` branch to VAGEN-Lite, a lightweight and clean reimplementation built on VERL agent-loop for easy customization and stable performance. For the previous full-featured release, please visit the [vagen-legacy](https://github.com/mll-lab-nu/VAGEN/tree/vagen-legacy) branch.
 
+**[2025/12]** Introducing [VAGEN-Lite](https://github.com/mll-lab-nu/VAGEN/tree/vagen-lite): a lightweight and clean reimplementation of VAGEN, built on the VERL agent-loop for easy customization and stable performance.
+
+**[2025/09]** VAGEN is accepted by Neurips 2025
+
+**[2025/04]** We've introduced a new modular design for environments and services in VAGEN:
+- Enhanced environment framework for easier creation of custom environments
+- New service architecture for efficient distributed training
+- Check out our new guides:
+  - [Creating Environments](./docs/envs/create-env.md): New environment protocal.
+  - [Creating Services](./docs/envs/create-service.md): We now support hosting environments in a separate process
+
+**[2025/03]** We release VAGEN, a multi-turn reinforcement learning framework for training VLM Agents!
+
 ## Installation
 
 ```bash
@@ -182,15 +195,27 @@ Write your training script based on:
 
 See the [Documentation](https://vagen.readthedocs.io/) for more customization options:
 
-- [Custom Filter](https://vagen.readthedocs.io/en/latest/custom-filter/) - Preprocess training data (supported by [RAGEN](https://github.com/RAGEN-AI/RAGEN))
+- [Custom Filter](https://vagen.readthedocs.io/en/latest/custom-filter/) — Trajectory filtering (e.g., Reward Variance (RV) filter in [RAGEN](https://github.com/RAGEN-AI/RAGEN))
 - [Custom Metric](https://vagen.readthedocs.io/en/latest/custom-metric/) - Add W&B logging metrics
 - [Configuration](https://vagen.readthedocs.io/en/latest/configuration/) - Training configuration reference
 
 ## Useful Configs
 refer to `vagen/configs/vagen_multiturn.yaml`
 
+### No Concat Mode
+```yaml
+# Enable no concat mode: input is system prompt + current step observation
+trainer:
+  concat_multi_turn: False
+# Currently only supported with algorithm.adv_estimator=no_concat_gae
+
+```
+
 ### Image Logging
 ```yaml
+# Warning:
+# - If you set a training-data rollout dir AND enable image logging, training images will also be dumped to disk.
+#   This can consume a large amount of storage very quickly. Monitor disk usage and consider cleanup/limits.
 trainer:
   log_image:
     enable: false      # true can enable saving rollout/validation images to disk
@@ -203,17 +228,23 @@ trainer:
 # export HF_TOKEN=xxx
 huggingface_hub:
   hf_save_freq: null   # upload every N steps (must be a multiple of trainer.save_freq); null = disabled
-  repo_id: null         # HuggingFace repo id, e.g. "user/my-model"
-  private: false        # whether the repo is private
+  repo_id: null        
+  private: false        
 ```
 
 ### Training Data Filtering
 ```yaml
+
 filter:
-  name: reward_variance   # filter strategy name (registered in FILTER_REGISTRY)
-  filter_kwargs: {}        # extra kwargs passed to the filter function
-  enable: false            # set to true to enable filtering
+  name: reward_variance_top_p # refer to vagen/custom_filter
+  filter_kwargs: 
+    top_p: 0.9 
+  enable: False # set to true to enable filtering, recommended for grpo trainining
 ```
+
+
+## Known Issues & Fixes
+See [docs/issues.md](docs/issues.md)
 
 ## Citation
 

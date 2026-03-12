@@ -2,17 +2,17 @@
 
 set -x
 
-PROJECT_NAME="vagen_experiments"
-EXPERIMENT_NAME="ppo_qwen3vl2b"
+PROJECT_NAME="vagen_spatial_gym"
+EXPERIMENT_NAME="grpo_qwen25vl7b"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
 EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
-DATASET_TRAIN=${SCRIPTDIR}/train_sokoban_free_wm.yaml
-DATASET_VAL=${SCRIPTDIR}/val_sokoban_free_wm.yaml
+DATASET_TRAIN=${SCRIPTDIR}/train_spatial_gym_vision.yaml
+DATASET_VAL=${SCRIPTDIR}/val_spatial_gym_vision.yaml
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent.yaml
-REF_MODEL_PATH=Qwen/Qwen3-VL-2B-Instruct
+REF_MODEL_PATH=Qwen/Qwen2.5-VL-7B-Instruct
 mkdir -p ${EXPERIMENT_DIR}
 
 
@@ -21,8 +21,10 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     --config-name='vagen_multiturn' \
     data.train_files=${DATASET_TRAIN} \
     data.val_files=${DATASET_VAL} \
-    data.train_batch_size=128 \
-    algorithm.adv_estimator=gae \
+    data.train_batch_size=32 \
+    data.max_prompt_length=4000 \
+    data.max_response_length=2000 \
+    algorithm.adv_estimator=grpo \
     algorithm.kl_ctrl.kl_coef=0.0 \
     actor_rollout_ref.model.path=${REF_MODEL_PATH} \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -40,9 +42,9 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=sglang \
     actor_rollout_ref.rollout.mode=async \
-    actor_rollout_ref.rollout.n=1 \
+    actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.max_num_batched_tokens=10000 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
@@ -57,18 +59,16 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.val_before_train=True \
-    trainer.n_gpus_per_node=2 \
+    trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
-    trainer.save_freq=100 \
-    trainer.test_freq=20 \
+    trainer.save_freq=5 \
+    trainer.test_freq=2 \
     trainer.project_name=${PROJECT_NAME} \
     trainer.experiment_name=${EXPERIMENT_NAME} \
     trainer.default_local_dir=${SAVE_CHECKPOINT_DIR} \
     trainer.validation_data_dir=${EXPERIMENT_DIR}/validation \
     trainer.rollout_data_dir=${EXPERIMENT_DIR}/rollout_data \
     trainer.log_val_generations=32 \
-    data.max_prompt_length=1000 \
-    data.max_response_length=4000 \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=${REF_MODEL_PATH} \
@@ -76,13 +76,5 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     critic.ppo_micro_batch_size_per_gpu=1 \
     critic.model.fsdp_config.param_offload=True \
     critic.model.fsdp_config.optimizer_offload=True \
-    +actor_rollout_ref.rollout.engine_kwargs.sglang.attention_backend=flashinfer \
-    +actor_rollout_ref.rollout.engine_kwargs.sglang.mm_attention_backend=triton_attn \
-    actor_rollout_ref.ref.strategy=fsdp2 \
-    actor_rollout_ref.actor.strategy=fsdp2 \
-    trainer.total_training_steps=400 2>&1 | \
+    trainer.total_training_steps=10 2>&1 | \
     tee ${EXPERIMENT_DIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log >(tee ${BASEDIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log >/dev/null)
-# actor_rollout_ref.model.lora_rank=8 \
-#     actor_rollout_ref.model.lora_alpha=16 \
-#     actor_rollout_ref.rollout.load_format="safetensors" \
-#     actor_rollout_ref.model.target_modules="all-linear" \
