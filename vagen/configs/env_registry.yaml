@@ -2,6 +2,7 @@ env_registry:
   # Local environments
   Sokoban: vagen.envs.sokoban.sokoban_env.Sokoban
   FrozenLake: vagen.envs.frozenlake.frozenlake_env.FrozenLake
+  SpatialGym: vagen.envs.spatial_gym.spatial_gym_env.SpatialGym
   ScannetNoTool: view_suite.envs.scannet_proxy_task.gym_proxy_no_tool.GymProxyNoTool
   ScannetTool: view_suite.envs.scannet_proxy_task.gym_proxy_tool.GymProxyTool
   ScannetAG: view_suite.envs.scannet_proxy_task.gym_proxy_action_gen.GymProxyActionGen
