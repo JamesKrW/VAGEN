@@ -4,7 +4,7 @@ set -x
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 PROJECT_NAME="vagen_experiments"
-EXPERIMENT_NAME="forward_inverse_grpo_qwen25vl7b"
+EXPERIMENT_NAME="forward_inverse_grpo_qwen25vl7b_trained"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=$(dirname "$0")
