@@ -5,7 +5,7 @@ from typing import Any, Dict
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 def build_client_openai(cfg: Dict[str, Any]) -> AsyncOpenAI:
-    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY", "")
+    api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "")
     base_url = cfg.get("base_url")
     return AsyncOpenAI(api_key=api_key, base_url=base_url) if base_url else AsyncOpenAI(api_key=api_key)
 
