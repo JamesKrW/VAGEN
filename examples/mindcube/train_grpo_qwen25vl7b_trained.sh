@@ -12,7 +12,7 @@ SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
 DATASET_TRAIN=${SCRIPTDIR}/train.yaml
 DATASET_VAL=${SCRIPTDIR}/val.yaml
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent.yaml
-REF_MODEL_PATH=/root/projects/viewsuite/iter5_rl_960/iter5_rl_960
+REF_MODEL_PATH=/root/projects/viewsuite/graphrl_viewsuite_ae_new_graph/iter_003/rl_model
 mkdir -p ${EXPERIMENT_DIR}
 
 
@@ -77,5 +77,6 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     critic.ppo_micro_batch_size_per_gpu=1 \
     critic.model.fsdp_config.param_offload=True \
     critic.model.fsdp_config.optimizer_offload=True \
+    huggingface_hub.hf_save_freq=200 \
     trainer.total_training_steps=401 2>&1 | \
     tee ${EXPERIMENT_DIR}/${PROJECT_NAME}_${EXPERIMENT_NAME}.log
