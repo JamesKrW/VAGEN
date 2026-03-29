@@ -60,6 +60,12 @@ class _GeminiClient:
         genai.configure(api_key=api_key)
         self.genai = genai
 
+@register_client("random_response", "random_navigation")
+def build_client_random(cfg: Dict[str, Any]) -> None:
+    """No real client needed for random adapters."""
+    return None
+
+
 @register_client("gemini")
 def build_client_gemini(cfg: Dict[str, Any]) -> _GeminiClient:
     api_key = cfg.get("api_key") or os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")

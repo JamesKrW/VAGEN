@@ -9,4 +9,6 @@ import vagen.evaluate.adapters.sglang_adapter
 import vagen.evaluate.adapters.vllm_adapter  
 import vagen.evaluate.adapters.together_adapter 
 import vagen.evaluate.adapters.claude_adapter  
-import vagen.evaluate.adapters.gemini_adapter  
+import vagen.evaluate.adapters.gemini_adapter
+import vagen.evaluate.adapters.random_response_adapter
+import vagen.evaluate.adapters.random_navigation_adapter
