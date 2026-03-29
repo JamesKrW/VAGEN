@@ -7,9 +7,13 @@ Strategy:
   - Middle turns: random movement/rotation actions.
   - Last turn: parse all camera poses seen so far from the conversation
     history and submit a randomly chosen one as the answer.
+
+Reproducibility: the RNG is seeded with (env_seed, message_hash),
+so identical conversation states always produce the same action sequence.
 """
 from __future__ import annotations
 
+import hashlib
 import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,6 +43,25 @@ _POSE_RE = re.compile(
     r"\[tx=([-\d.]+),\s*ty=([-\d.]+),\s*tz=([-\d.]+),\s*"
     r"rx=([-\d.]+)°?,\s*ry=([-\d.]+)°?,\s*rz=([-\d.]+)°?\]"
 )
+
+
+def _messages_fingerprint(messages: List[Dict[str, Any]]) -> int:
+    """Derive a deterministic seed from conversation content (text + images)."""
+    h = hashlib.sha256()
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            h.update(content.encode())
+        elif isinstance(content, list):
+            for p in content:
+                if not isinstance(p, dict):
+                    continue
+                if p.get("type") == "text":
+                    h.update(p.get("text", "").encode())
+                elif p.get("type") == "image_url":
+                    url = (p.get("image_url") or {}).get("url", "")
+                    h.update(url.encode())
+    return int(h.hexdigest()[:16], 16)
 
 
 def _extract_text(message: Dict[str, Any]) -> str:
@@ -79,10 +102,10 @@ def _format_pose(pose: Tuple[float, ...]) -> str:
     return ", ".join(f"{v:.2f}" for v in pose)
 
 
-def _random_move_actions(n: int = 3) -> List[str]:
+def _random_move_actions(rng: random.Random, n: int = 3) -> List[str]:
     """Generate a short sequence of random movement/rotation actions."""
-    count = random.randint(1, n)
-    return [random.choice(ALL_ACTIONS) for _ in range(count)]
+    count = rng.randint(1, n)
+    return [rng.choice(ALL_ACTIONS) for _ in range(count)]
 
 
 @register_adapter("random_navigation")
@@ -103,6 +126,9 @@ class RandomNavigationAdapter(ModelAdapter):
     # ── completion ──
 
     async def acompletion(self, messages: List[Dict[str, Any]], **chat_config: Any) -> str:
+        base_seed = int(chat_config.get("random_seed", 0))
+        rng = random.Random(base_seed ^ _messages_fingerprint(messages))
+
         # Determine current step and max steps from the latest user message.
         last_user_text = ""
         for msg in reversed(messages):
@@ -120,18 +146,18 @@ class RandomNavigationAdapter(ModelAdapter):
             # Collect all camera poses observed during the episode.
             poses = _parse_poses_from_messages(messages)
             if poses:
-                chosen = random.choice(poses)
+                chosen = rng.choice(poses)
             else:
                 # Fallback: submit a zero pose.
                 chosen = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             actions_str = f"answer({_format_pose(chosen)})"
         elif current_step == 1:
             # First turn: must select a view before moving.
-            moves = _random_move_actions(3)
+            moves = _random_move_actions(rng, 3)
             actions_str = "|".join(["select_view(init_view)"] + moves)
         else:
             # Middle turns: random movements.
-            moves = _random_move_actions(3)
+            moves = _random_move_actions(rng, 3)
             actions_str = "|".join(moves)
 
         return f"<think>random exploration step {current_step}/{max_steps}</think><action>{actions_str}|</action>"
