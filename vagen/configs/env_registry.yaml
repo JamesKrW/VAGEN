@@ -14,5 +14,10 @@ env_registry:
   ActiveExploration: view_suite.envs.scannet_proxy_task.active_exploration.ActiveExploration
   InverseDynamics: view_suite.envs.scannet_proxy_task.inverse_dynamics.InverseDynamics
 
+  # AI2-THOR proxy tasks (same JSONL schema, distinct class for routing)
+  ThorForwardDynamics: view_suite.envs.ai2thor_proxy_task.forward_dynamics.ThorForwardDynamics
+  ThorInverseDynamics: view_suite.envs.ai2thor_proxy_task.inverse_dynamics.ThorInverseDynamics
+  ThorActiveExplore:   view_suite.envs.ai2thor_proxy_task.active_exploration.ThorActiveExplore
+
   # Remote environment client (generic, reusable for any remote env)
   RemoteEnv: vagen.envs_remote.GymImageEnvClient
