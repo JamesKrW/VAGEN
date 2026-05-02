@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, Iterable, List, Optional, Literal
 
 from vagen.evaluate.vision_workflow import GenericVisionInferenceWorkflow
 from vagen.evaluate.adapters.throttled_adapter import ThrottledAdapter, ThrottleRetryPolicy
@@ -185,3 +185,92 @@ async def run_eval_parallel(
                     pass
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Multi-process worker entry (used by run_eval.main when run.num_workers > 1)
+# ---------------------------------------------------------------------------
+#
+# Why this exists
+# ---------------
+# ``run_eval_parallel`` is an asyncio coroutine that runs every job in a
+# single Python process. For VLM workloads with heavy CPU-side work per
+# job (PIL image load + resize, base64 encoding, JSON serialization,
+# regex parsing of replies) one Python process / one event loop / one
+# core of CPU budget becomes the bottleneck — the GPU-side scheduler
+# sits idle waiting for the orchestrator to dispatch requests.
+#
+# This module-level function is the entry point for an opt-in
+# multi-process mode: ``run_eval.main`` partitions ``jobs`` into
+# ``num_workers`` non-overlapping chunks and spawns
+# ``ProcessPoolExecutor`` workers. Each worker independently runs
+# ``run_eval_parallel`` on its chunk against the same shared backend
+# (e.g., one sglang server URL); the dump_dir layout is unchanged
+# because each rollout writes to its own ``tag_<id>/<seed>/`` subdir.
+# Default behaviour is unchanged: ``num_workers=1`` triggers the
+# in-process path.
+def run_eval_chunk_subprocess(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Worker subprocess entry point. Picklable, module-level.
+
+    ``payload`` carries everything needed to call :func:`run_eval_parallel`
+    plus the parent process's ``NORMAL_FINISH_REASONS`` override (since
+    monkey-patches in the parent don't propagate across the spawn
+    boundary). Returns the list of per-rollout result dicts in the same
+    shape as the single-process path.
+    """
+    # Re-register builtin envs in this child (registry is process-local).
+    # Custom envs (e.g. graphrl single-turn) are picklable by FQCN through
+    # the ``env_cls`` field in each job's data, so unpickling them re-imports
+    # their defining module.
+    from vagen.evaluate import register_builtins  # noqa: F401  (registers on import)
+
+    # Mirror the parent's NORMAL_FINISH_REASONS override into this child.
+    # Used by the augmented reasoning flow to mark only ``done`` as a real
+    # success (treating ``max_turns`` as retry-eligible).
+    nfr = payload.get("normal_finish_reasons")
+    if nfr is not None:
+        # Patch the module-level set so resume / summary code in this child
+        # uses the same definition as the parent.
+        global NORMAL_FINISH_REASONS  # noqa: PLW0603
+        NORMAL_FINISH_REASONS = set(nfr)
+        try:
+            from vagen.evaluate import run_eval as _run_eval
+            _run_eval.NORMAL_FINISH_REASONS = NORMAL_FINISH_REASONS
+        except Exception:
+            # Older layouts may not import the symbol there; ignore.
+            pass
+
+    return asyncio.run(
+        run_eval_parallel(
+            payload["jobs"],
+            backend=payload["backend"],
+            backend_cfg=payload["backend_cfg"],
+            model=payload["model"],
+            default_max_turns=payload["default_max_turns"],
+            dump_dir=payload.get("dump_dir"),
+            max_concurrent_jobs=int(payload.get("max_concurrent_jobs", 4)),
+            resume_mode=payload.get("resume_mode", "skip_completed"),
+            live_summary=bool(payload.get("live_summary", False)),
+        )
+    )
+
+
+def split_jobs_round_robin(
+    jobs: List[Dict[str, Any]], num_workers: int,
+) -> List[List[Dict[str, Any]]]:
+    """Split ``jobs`` into ``num_workers`` non-overlapping chunks.
+
+    Round-robin assignment (``jobs[i] → worker[i % num_workers]``) so each
+    worker sees a representative slice of long/short / per-tag jobs
+    instead of getting an unbalanced contiguous block. Returns at most
+    ``num_workers`` chunks; empty trailing chunks are trimmed.
+    """
+    if num_workers < 1:
+        raise ValueError(f"num_workers must be >= 1, got {num_workers}")
+    if num_workers == 1 or len(jobs) <= 1:
+        return [list(jobs)] if jobs else []
+    n = min(num_workers, len(jobs))
+    chunks: List[List[Dict[str, Any]]] = [[] for _ in range(n)]
+    for i, j in enumerate(jobs):
+        chunks[i % n].append(j)
+    return [c for c in chunks if c]

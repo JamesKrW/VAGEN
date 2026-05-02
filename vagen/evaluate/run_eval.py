@@ -15,7 +15,12 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 
 from vagen.evaluate.register_builtins import *  # populate registry
 from vagen.envs.registry import get_env_cls
-from vagen.evaluate.runner import run_eval_parallel, NORMAL_FINISH_REASONS
+from vagen.evaluate.runner import (
+    NORMAL_FINISH_REASONS,
+    run_eval_chunk_subprocess,
+    run_eval_parallel,
+    split_jobs_round_robin,
+)
 from vagen.evaluate.utils.seeding_utils import generate_seeds_for_spec
 from vagen.evaluate.utils.summary_utils import write_rollouts_summary_from_dump
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "conf", "evaluate.yaml")
@@ -383,6 +388,73 @@ def _load_config(cfg_path: str, overrides: List[str]) -> DictConfig:
     return cfg
 
 
+def _run_jobs_multiprocess(
+    *,
+    jobs: List[Dict[str, Any]],
+    backend: str,
+    backend_cfg: Dict[str, Any],
+    model: str,
+    default_max_turns: Optional[int],
+    dump_dir: Optional[str],
+    max_concurrent_jobs: int,
+    resume_mode: str,
+    live_summary: bool,
+    num_workers: int,
+    normal_finish_reasons: Optional[List[str]],
+) -> List[Dict[str, Any]]:
+    """Fan ``jobs`` out to ``num_workers`` subprocess workers.
+
+    Each worker spins up its own asyncio loop and calls
+    :func:`run_eval_parallel` on a non-overlapping seed/job slice. They
+    all hit the same backend client (e.g. one sglang server URL) and
+    write into the same ``dump_dir`` — but rollout results live in
+    per-seed subdirs (``tag_<id>/<seed>/``) so concurrent writes never
+    collide. Returns the concatenated per-rollout result list, in the
+    same shape ``run_eval_parallel`` would have returned with
+    ``num_workers=1``.
+    """
+    from concurrent.futures import ProcessPoolExecutor
+    import multiprocessing as mp
+
+    chunks = split_jobs_round_robin(jobs, num_workers)
+    if not chunks:
+        return []
+    # Each worker uses ``max_concurrent_jobs`` AS-IS (per-worker cap),
+    # matching the single-process semantics. Total in-flight across the
+    # backend = num_workers * max_concurrent_jobs.
+    worker_payloads: List[Dict[str, Any]] = []
+    for chunk in chunks:
+        worker_payloads.append({
+            "jobs": chunk,
+            "backend": backend,
+            "backend_cfg": backend_cfg,
+            "model": model,
+            "default_max_turns": default_max_turns,
+            "dump_dir": dump_dir,
+            "max_concurrent_jobs": max_concurrent_jobs,
+            "resume_mode": resume_mode,
+            "live_summary": live_summary,
+            "normal_finish_reasons": normal_finish_reasons,
+        })
+
+    n_actual = len(worker_payloads)
+    logger.info(
+        "Multi-process rollout: %d worker(s), %d total jobs, ~%d jobs/worker, "
+        "max_concurrent_jobs=%d (per worker)",
+        n_actual, len(jobs), len(jobs) // n_actual, max_concurrent_jobs,
+    )
+
+    # Use spawn so the child has a clean Python state (no shared asyncio
+    # loop, no inherited fds beyond what we pickle). Forking a
+    # CUDA-touching parent breaks; spawn is portable across platforms.
+    ctx = mp.get_context("spawn")
+    results: List[Dict[str, Any]] = []
+    with ProcessPoolExecutor(max_workers=n_actual, mp_context=ctx) as pool:
+        for chunk_results in pool.map(run_eval_chunk_subprocess, worker_payloads):
+            results.extend(chunk_results)
+    return results
+
+
 def main() -> None:
     args = _parse_args()
     cfg_path = args.config or DEFAULT_CONFIG_PATH
@@ -404,6 +476,23 @@ def main() -> None:
     live_summary = bool(run_cfg.get("live_summary", False))
     max_concurrent = int(run_cfg.get("max_concurrent_jobs", 4))
     base_seed = int(run_cfg.get("base_seed", run_cfg.get("start_seed", 0)))
+    # Multi-process knob (default 1 = legacy single-process asyncio path).
+    # When > 1, the job list is partitioned round-robin across that many
+    # subprocess workers — each runs its own asyncio event loop against
+    # the shared backend, with ``max_concurrent_jobs`` as a per-worker cap.
+    # Use this when the bottleneck is single-process Python CPU
+    # (image preprocessing, JSON encoding, regex parsing) rather than the
+    # backend itself; common for VLM workloads at high concurrency.
+    num_workers = int(run_cfg.get("num_workers", 1))
+    # Optional explicit override of the parent's NORMAL_FINISH_REASONS.
+    # Useful when the caller (e.g. the reasoning-augmentation pipeline)
+    # monkey-patches it to ``{"done"}`` so ``max_turns`` exits don't count
+    # as a successful resume — the patch otherwise wouldn't propagate
+    # across the spawn boundary in multi-process mode.
+    nfr_override = run_cfg.get("normal_finish_reasons")
+    if nfr_override is not None:
+        from vagen.evaluate import runner as _runner_mod
+        _runner_mod.NORMAL_FINISH_REASONS = set(nfr_override)
 
     backend_cfg: Dict[str, Any] = cfg.get("backends", {})[backend]
     model = backend_cfg.get("model") or backend_cfg.get("deployment")
@@ -447,9 +536,26 @@ def main() -> None:
         jobs = pending_jobs
     logger.info("Total pending jobs: %d", len(jobs))
 
-    results = asyncio.run(
-        run_eval_parallel(
-            jobs,
+    if num_workers <= 1 or len(jobs) <= 1:
+        # Default in-process path — bit-identical to the pre-multi-worker
+        # behaviour so existing configs (without ``num_workers``) get the
+        # same result.
+        results = asyncio.run(
+            run_eval_parallel(
+                jobs,
+                backend=backend,
+                backend_cfg=backend_cfg,
+                model=model,
+                default_max_turns=default_max_turns,
+                dump_dir=dump_dir,
+                max_concurrent_jobs=max_concurrent,
+                resume_mode=resume_mode,
+                live_summary=live_summary,
+            )
+        )
+    else:
+        results = _run_jobs_multiprocess(
+            jobs=jobs,
             backend=backend,
             backend_cfg=backend_cfg,
             model=model,
@@ -458,8 +564,11 @@ def main() -> None:
             max_concurrent_jobs=max_concurrent,
             resume_mode=resume_mode,
             live_summary=live_summary,
+            num_workers=num_workers,
+            normal_finish_reasons=(
+                list(nfr_override) if nfr_override is not None else None
+            ),
         )
-    )
 
     error_records_by_tag: Dict[Union[int, str], List[Dict[str, Any]]] = {}
     tag_ids_seen: set[Union[int, str]] = set()
