@@ -9,7 +9,7 @@
 <h4 align="center"><b>🔥 NeurIPS 2025 🔥</b></h4>
 
 <p align="center" style="font-size: 16px;">
-  Kangrui Wang*, Pingyue Zhang*, Zihan Wang*, Yaning Gao*, Linjie Li*, Qineng Wang, Hanyang Chen, Chi Wan, Yiping Lu, Zhengyuan Yang, Lijuan Wang, Ranjay Krishna, Jiajun Wu, Li Fei-Fei, Yejin Choi, Manling Li
+  Kangrui Wang*, Pingyue Zhang*, Zihan Wang*, Yaning Gao*, Linjie Li*, Qineng Wang, Hanyang Chen, Chi Wan, Yiping Lu, Zhengyuan Yang, Lijuan Wang, Ranjay Krishna, Jiajun Wu, Li Fei-Fei, Yejin Choi, <a href="https://limanling.github.io/">Manling Li</a>
 </p>
 <p align="center" style="font-size: 12px;"><i>(* equal contribution)</i></p>
 
@@ -21,7 +21,7 @@
   <a href="https://vagen-ai.github.io/"><img src="https://img.shields.io/badge/🌐_Website-00C851?style=for-the-badge&logoColor=white" alt="Website"></a>
 </p>
 
-**VAGEN** is a **reinforcement learning (RL) framework that trains multi-turn VLM agents** (vision-language model agents) to build an internal **world model** through explicit visual state reasoning. Instead of rewarding only task success, VAGEN reinforces the agent's world model reasoning itself, decomposed into **StateEstimation** ("what is the current state?") and **TransitionModeling** ("what comes next?"), with a turn-level **WorldModeling Reward** (LLM-as-Judge) and **Bi-Level GAE** for turn-aware credit assignment. Combining world models with reinforcement learning, a 3B VLM trained with VAGEN scores **0.82** across five visual agent benchmarks, a 3x improvement over its untrained backbone (0.21), outperforming GPT-5 (0.75), Gemini 2.5 Pro (0.67), and Claude 4.5 (0.62).
+**VAGEN** is a **reinforcement learning (RL) framework that trains multi-turn VLM agents** (vision-language model agents) to build an internal **world model** through explicit visual state reasoning. Instead of rewarding only task success, VAGEN reinforces the agent's world model reasoning itself, decomposed into **StateEstimation** ("what is the current state?") and **TransitionModeling** ("what comes next?"), with a turn-level **WorldModeling Reward** (LLM-as-Judge) and **Bi-Level GAE** for turn-aware credit assignment. Combining world models with reinforcement learning, a 3B VLM trained with VAGEN scores **0.82** across five visual agent benchmarks, a 3x improvement over its untrained backbone (0.21), outperforming GPT-5 (0.75), Gemini 2.5 Pro (0.67), and Claude 4.5 (0.62). This is world model reinforcement learning as an approach to RL for vision: in multi-turn, partially observable environments, explicit world modeling, not model scale, is what closes the gap.
 
 <div style="width:100%; overflow-x:auto;">
   <table style="width:100%;">
