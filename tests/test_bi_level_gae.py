@@ -22,12 +22,12 @@ from verl.trainer.ppo.core_algos import get_adv_estimator_fn
 
 import verl.utils.torch_functional as verl_F
 
-import vagen.custom_advantage  # noqa: F401  importing is what registers the estimators
+import vagen.algorithms  # noqa: F401  importing is what registers the estimators
 
 
 # --------------------------------------------------------------------- the original
 #
-# Verbatim from commit 4076507 `vagen/trainer/ppo/core_algos.py`, reformatted but not
+# Verbatim from commit 4076507 `vagen/training/trainer/ppo/core_algos.py`, reformatted but not
 # altered. Do not "clean this up": its value is that it is not our code.
 
 
@@ -270,7 +270,7 @@ def test_per_span_rewards_are_reduced_to_the_same_turn_totals_internally():
 
 
 def test_registry_declarations():
-    from vagen.custom_advantage import (
+    from vagen.algorithms import (
         TRAJECTORY_ESTIMATORS, UNDISCOUNTED_ESTIMATORS, needs_critic, needs_value_mask,
     )
 
