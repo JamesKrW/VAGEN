@@ -94,8 +94,8 @@ bash scripts/install.sh  # SGLang 0.5.13 (default)
 ```
 
 This initializes the pinned `verl` submodule and installs the CUDA 13 stack: Torch 2.11.0,
-SGLang 0.5.13, and Transformers 5.8.1. The script is safe to re-run; set `SKIP_ENGINE=1`
-to verify and keep an existing rollout engine.
+SGLang 0.5.13, Transformers 5.8.1, and TransferQueue 0.1.9. The script is safe to
+re-run; set `SKIP_ENGINE=1` to verify and keep an existing rollout engine.
 
 The stack completed 10-step Sokoban runs for Qwen3-VL and both Qwen3.5 modes. GLM-4.6V
 and InternVL3.5 also completed actor, critic, update, and evaluation cycles.
@@ -160,7 +160,9 @@ bash examples/train/sokoban/train_default_gae_internvl35_2b.sh \
 ```
 
 See [Configuration](docs/configuration.md) for harnesses, estimators, model-specific flags,
-and state-reward settings.
+and state-reward settings. Training defaults to verl V1 `colocate_async`; see
+[Colocated asynchronous training](docs/colocate-async.md) for its queue, straggler, and
+token-reward contracts and for the temporary V0 rollback switch.
 
 ### Evaluation
 
