@@ -85,6 +85,8 @@ async def run_eval_parallel(
     )
     if "cache_control" in backend_cfg:   # only the OpenAI-compatible adapter takes it
         adapter_kwargs["cache_control"] = bool(backend_cfg["cache_control"])
+    if backend_cfg.get("image_url_extra"):   # likewise; e.g. {max_dynamic_patch: 1} for SGLang InternVL
+        adapter_kwargs["image_url_extra"] = {str(k): v for k, v in dict(backend_cfg["image_url_extra"]).items()}
     base_adapter_factory = lambda **kw: REGISTRY.build_adapter(backend, **{**adapter_kwargs, **kw})
 
     # Concurrency gates
