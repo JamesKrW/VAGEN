@@ -15,7 +15,10 @@ _SCAFFOLD = [
 
 def _parts(message: dict) -> list[dict]:
     content = message.get("content", "")
-    return content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
+    if not isinstance(content, list):
+        return [{"type": "text", "text": str(content)}]
+    # A harness's prompt-cache breakpoint is an API-side hint; a chat template must not see it.
+    return [p for p in content if not (isinstance(p, dict) and p.get("type") == "cache_breakpoint")]
 
 
 def _text_only(message: dict) -> str:
