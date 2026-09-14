@@ -123,11 +123,18 @@ class OpenAIAdapter(EvaluationBackend):
         client,
         model: str,
         cache_control: bool = False,
+        image_url_extra: Optional[Dict[str, Any]] = None,
     ):
         self.client = client
         self.model = model
         #: Raw response of the most recent call, read by ChatClient for raw_responses.json.
         self.last_raw: Any = None
+        #: Extra keys merged into every ``image_url`` part, for servers that read per-image
+        #: options there. SGLang's InternVL processor takes ``max_dynamic_patch`` only from
+        #: the image part; without it a small square frame is upscaled into a 3x3 grid plus a
+        #: thumbnail (~2.5k tokens) because its tile search breaks aspect-ratio ties toward
+        #: the larger grid. Empty by default: OpenAI proper rejects unknown part fields.
+        self.image_url_extra = dict(image_url_extra or {})
         #: Attach ``cache_control`` to the text before a harness's cache breakpoint. Off by
         #: default: OpenAI proper and most self-hosted servers reject unknown part fields;
         #: OpenRouter (Gemini, Anthropic, ...) uses it for explicit prompt caching.
@@ -148,7 +155,8 @@ class OpenAIAdapter(EvaluationBackend):
                 if str(val).strip():
                     content.append({"type": "text", "text": str(val)})
             else:
-                content.append({"type": "image_url", "image_url": {"url": pil_to_dataurl_png(val)}})
+                content.append({"type": "image_url",
+                                "image_url": {"url": pil_to_dataurl_png(val), **self.image_url_extra}})
         return apply_cache_breakpoints(content, self.cache_control)
 
     def format_system(self, text: str, images: List[Image.Image]) -> Dict[str, Any]:
