@@ -8,6 +8,44 @@ from typing import Any, Dict, List, Tuple, Optional
 from PIL import Image
 
 IMAGE_PLACEHOLDER = "<image>"
+#: A harness puts this between two text parts to say "everything before here is a stable
+#: prefix worth caching". Adapters that speak Anthropic-style ``cache_control`` (OpenAI-
+#: compatible routers such as OpenRouter, Anthropic) attach it to the text before the
+#: marker; every other adapter strips it. In the message list it is the content part
+#: ``{"type": "cache_breakpoint"}``; ``ChatClient`` renders that to this string.
+CACHE_BREAKPOINT = "<cache_breakpoint>"
+CACHE_BREAKPOINT_TYPE = "cache_breakpoint"
+
+
+def apply_cache_breakpoints(content: List[Dict[str, Any]], enabled: bool,
+                            text_type: str = "text") -> List[Dict[str, Any]]:
+    """Resolve ``CACHE_BREAKPOINT`` markers inside OpenAI-style text parts.
+
+    ``enabled``: the text before a marker becomes its own part carrying
+    ``cache_control: {"type": "ephemeral"}``; disabled: the marker is just removed.
+    Only the LAST breakpoint matters to Gemini via OpenRouter, Anthropic honours up to four;
+    emitting all of them is harmless.
+    """
+    out: List[Dict[str, Any]] = []
+    for part in content:
+        text = part.get("text") if part.get("type") == text_type else None
+        if not text or CACHE_BREAKPOINT not in text:
+            out.append(part)
+            continue
+        chunks = text.split(CACHE_BREAKPOINT)
+        for i, chunk in enumerate(chunks):
+            is_prefix = i < len(chunks) - 1
+            if not chunk:
+                # A marker right after an image (or another marker): the cached prefix ends
+                # with the previous part, so that part carries the control.
+                if is_prefix and enabled and out:
+                    out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
+                continue
+            new_part = {**part, "text": chunk}
+            if is_prefix and enabled:
+                new_part["cache_control"] = {"type": "ephemeral"}
+            out.append(new_part)
+    return out
 
 def pil_to_dataurl_png(img: Image.Image) -> str:
     """Encode a PIL image as a data URL (PNG)."""

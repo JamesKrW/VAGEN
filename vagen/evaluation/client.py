@@ -27,6 +27,10 @@ copied from a training config cut every observation to nothing.
 
 from __future__ import annotations
 
+import uuid
+
+from vagen.evaluation.backends._common.rendering import CACHE_BREAKPOINT, CACHE_BREAKPOINT_TYPE
+
 import logging
 from typing import Any
 
@@ -90,6 +94,9 @@ class ChatClient(InferenceClient):
         self.processor = processor
         self.tokens_per_image = tokens_per_image
         self._active: str | None = None
+        #: Per-episode id for ``extra_body.session_id: auto`` (OpenRouter sticky routing:
+        #: every turn of an episode reaches the provider that holds its prompt cache).
+        self._session_id = uuid.uuid4().hex
         #: conversation id -> the API messages sent so far. The harness decides *which*
         #: messages a call carries; this only remembers what they rendered to.
         self._api_messages: dict[str, list[dict]] = {}
@@ -173,6 +180,9 @@ class ChatClient(InferenceClient):
                 limit = min(limit, candidate) if limit else candidate
         if limit:
             params["max_tokens"] = limit
+        extra = params.get("extra_body")
+        if isinstance(extra, dict) and extra.get("session_id") == "auto":
+            params["extra_body"] = {**extra, "session_id": self._session_id}
 
         messages = self._api_messages.get(self._active) or []
         text = await self.adapter.acompletion(messages, **params)
@@ -195,4 +205,6 @@ def _text_and_images(message: dict) -> tuple[str, list]:
             parts.append(part.get("text", ""))
         elif part.get("type") == "image":
             parts.append("<image>")
+        elif part.get("type") == CACHE_BREAKPOINT_TYPE:
+            parts.append(CACHE_BREAKPOINT)
     return "".join(parts), images
