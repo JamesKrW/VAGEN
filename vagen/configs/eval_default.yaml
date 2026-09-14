@@ -43,6 +43,9 @@ backends:
     api_key: ""               # or export OPENAI_API_KEY
     base_url: null
     model: "gpt-4o-mini"
+    # Attach cache_control to a harness's cache breakpoint (explicit prompt caching on
+    # OpenRouter for Gemini/Anthropic). Leave off for OpenAI proper and self-hosted servers.
+    cache_control: false
     max_concurrency: 8
     max_retries: 6
     min_backoff: 0.5
