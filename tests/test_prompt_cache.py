@@ -59,3 +59,13 @@ async def test_session_id_auto_becomes_one_id_per_client():
     ids = [cfg["extra_body"]["session_id"] for cfg in seen]
     assert ids[0] == ids[1] != "auto" and ids[2] not in (ids[0], "auto")
     assert seen[0]["extra_body"]["reasoning"] == {"effort": "low"}   # the rest of extra_body survives
+
+
+def test_image_url_extra_is_merged_into_every_image_part():
+    imgs = [Image.new("RGB", (2, 2)), Image.new("RGB", (2, 2))]
+    msg = OpenAIAdapter(client=None, model="m", image_url_extra={"max_dynamic_patch": 1}).format_user_turn(
+        "a <image> b <image>", imgs)
+    parts = [p for p in msg["content"] if p["type"] == "image_url"]
+    assert len(parts) == 2 and all(p["image_url"]["max_dynamic_patch"] == 1 and p["image_url"]["url"].startswith("data:") for p in parts)
+    plain = OpenAIAdapter(client=None, model="m").format_user_turn("a <image>", imgs[:1])
+    assert set(plain["content"][-1]["image_url"]) == {"url"}
