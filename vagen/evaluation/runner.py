@@ -83,6 +83,8 @@ async def run_eval_parallel(
         client=client,
         model=model,
     )
+    if "cache_control" in backend_cfg:   # only the OpenAI-compatible adapter takes it
+        adapter_kwargs["cache_control"] = bool(backend_cfg["cache_control"])
     base_adapter_factory = lambda **kw: REGISTRY.build_adapter(backend, **{**adapter_kwargs, **kw})
 
     # Concurrency gates
