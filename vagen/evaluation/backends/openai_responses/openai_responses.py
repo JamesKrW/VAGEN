@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 from PIL import Image
 from vagen.evaluation.backends._common.base import EvaluationBackend
-from vagen.evaluation.backends._common.rendering import pil_to_dataurl_png, compile_text_images_for_order
+from vagen.evaluation.backends._common.rendering import apply_cache_breakpoints, pil_to_dataurl_png, compile_text_images_for_order
 from vagen.evaluation.backends._common.registry import register_adapter
 
 
@@ -25,7 +25,7 @@ class OpenAIResponsesAdapter(EvaluationBackend):
                     content.append({"type": "input_text", "text": str(val)})
             else:
                 content.append({"type": "input_image", "image_url": pil_to_dataurl_png(val)})
-        return content
+        return apply_cache_breakpoints(content, enabled=False, text_type="input_text")
 
     def format_system(self, text: str, images: List[Image.Image]) -> Dict[str, Any]:
         segs = compile_text_images_for_order(text, images)

@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Tuple
 from vagen.evaluation.backends._common.base import EvaluationBackend
-from vagen.evaluation.backends._common.rendering import pil_to_dataurl_png, compile_text_images_for_order, parse_data_url
+from vagen.evaluation.backends._common.rendering import apply_cache_breakpoints, pil_to_dataurl_png, compile_text_images_for_order, parse_data_url
 from vagen.evaluation.backends._common.options import filter_chat_kwargs
 from vagen.evaluation.backends._common.registry import register_adapter, register_client
 from PIL import Image
@@ -44,7 +44,7 @@ class ClaudeAdapter(EvaluationBackend):
                     content.append({"type": "text", "text": str(val)})
             else:
                 content.append({"type": "image_url", "image_url": {"url": pil_to_dataurl_png(val)}})
-        return content
+        return apply_cache_breakpoints(content, enabled=False)
 
     def format_system(self, text: str, images: List[Image.Image]) -> Dict[str, Any]:
         segs = compile_text_images_for_order(text, images)
