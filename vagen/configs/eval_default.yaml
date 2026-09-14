@@ -46,6 +46,9 @@ backends:
     # Attach cache_control to a harness's cache breakpoint (explicit prompt caching on
     # OpenRouter for Gemini/Anthropic). Leave off for OpenAI proper and self-hosted servers.
     cache_control: false
+    # Extra keys merged into every image_url part, e.g. {max_dynamic_patch: 1} for an SGLang
+    # InternVL server (per-image tile cap). Leave empty for OpenAI proper.
+    image_url_extra: {}
     max_concurrency: 8
     max_retries: 6
     min_backoff: 0.5
