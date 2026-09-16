@@ -38,11 +38,40 @@ class OpenAIResponsesAdapter(EvaluationBackend):
     def format_assistant_turn(self, text: str) -> Dict[str, Any]:
         return {"role": "assistant", "content": [{"type": "output_text", "text": text}]}
 
-    async def acompletion(self, messages: List[Dict[str, Any]], **chat_config: Any) -> str:
+    #: Chat-completions parameter -> its Responses name. The rest of a chat_config written
+    #: for /chat/completions (an OpenRouter `extra_body`, `stream`, ...) is not a Responses
+    #: parameter and is dropped rather than raising TypeError inside the SDK.
+    _RENAMES = {"max_tokens": "max_output_tokens", "max_completion_tokens": "max_output_tokens",
+                "max_new_tokens": "max_output_tokens"}
+    _PASS_THROUGH = ("max_output_tokens", "reasoning", "text", "metadata", "store",
+                     "truncation", "parallel_tool_calls", "tools", "tool_choice", "timeout")
 
+    def _responses_kwargs(self, chat_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Translate a chat_config into Responses parameters.
+
+        ``temperature`` and ``top_p`` are dropped: the reasoning models this API is required
+        for (gpt-5.x-pro, gpt-6-astra) reject them, and a 0.0 temperature written for the
+        chat endpoint should not turn every call into a 400. ``extra_body.reasoning`` is the
+        OpenRouter spelling of the effort knob and becomes the native ``reasoning`` argument.
+        """
+        out: Dict[str, Any] = {}
+        for key, value in chat_config.items():
+            if value is None:
+                continue
+            if key in self._RENAMES:
+                out[self._RENAMES[key]] = value
+            elif key in self._PASS_THROUGH:
+                out[key] = value
+            elif key == "extra_body" and isinstance(value, dict):
+                reasoning = value.get("reasoning")
+                if isinstance(reasoning, dict) and reasoning.get("effort"):
+                    out.setdefault("reasoning", {"effort": reasoning["effort"]})
+        return out
+
+    async def acompletion(self, messages: List[Dict[str, Any]], **chat_config: Any) -> str:
         resp = await self.client.responses.create(
             model=self.model,
             input=messages,
-            **chat_config,
+            **self._responses_kwargs(chat_config),
         )
         return resp.output_text or ""
