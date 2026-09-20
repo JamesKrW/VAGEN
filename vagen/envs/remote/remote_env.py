@@ -35,6 +35,8 @@ import logging
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+
 import httpx
 from PIL import Image
 
@@ -149,7 +151,13 @@ class GymImageEnvClient(GymImageEnv):
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                # One IVP episode renders several frames per turn and hundreds run at
+                # once; a 100-connection pool serialises them against a service that
+                # can take far more.
+                limits=httpx.Limits(
+                    max_connections=int(os.getenv("RENDER_MAX_CONNECTIONS", "1024")),
+                    max_keepalive_connections=int(os.getenv("RENDER_MAX_CONNECTIONS", "1024")),
+                ),
             )
 
     async def _ensure_connected_for_reset(self, seed: int) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
