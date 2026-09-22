@@ -130,8 +130,33 @@ def _scripted_responses(kwargs: dict) -> list[str] | None:
 class GymLoop(VagenGymAgentLoopBase):
     """Runner + harness + client. The mode comes from config, not from the class."""
 
+    # Episodes in flight per worker process. Validation hands every prompt x n to the
+    # workers at once (560 x 8 = 4,480 episodes), and each turn of each episode asks the
+    # render service for a frame; with no cap the service's admission queue overflowed,
+    # the env step failed, and GymEnvAdapter ended the episode as done with no submit --
+    # half of an epoch-end validation was silently cut to 1-2 turns (2026-09-22).
+    # ``actor_rollout_ref.rollout.max_concurrent_episodes`` (per worker; 0 = unlimited).
+    _episode_sem: "asyncio.Semaphore | None" = None
+    _episode_sem_size: int = -1
+
+    def _episode_slot(self):
+        import asyncio
+        size = int(self.config.actor_rollout_ref.rollout.get("max_concurrent_episodes", 0) or 0)
+        cls = type(self)
+        if cls._episode_sem is None or cls._episode_sem_size != size:
+            cls._episode_sem = asyncio.Semaphore(size) if size > 0 else None
+            cls._episode_sem_size = size
+        return cls._episode_sem
+
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> list[AgentLoopOutput]:
+        sem = self._episode_slot()
+        if sem is None:
+            return await self._run_episode(sampling_params, **kwargs)
+        async with sem:
+            return await self._run_episode(sampling_params, **kwargs)
+
+    async def _run_episode(self, sampling_params: dict[str, Any], **kwargs) -> list[AgentLoopOutput]:
         # V0 names these axes group_idx/traj_idx; V1 TransferQueue names the same
         # identities uid/session_id.  Normalize once at the rollout boundary so the
         # harness and environment remain completely unaware of the scheduler in use.
