@@ -235,8 +235,24 @@ class TaskRunnerV1:
 
         tq.init(config.transfer_queue)
         succeeded = False
+        # An experiment can swap in a subclass of the VAGEN V1 trainer (e.g. GraphRL's
+        # replay bank / demo mode) with trainer.v1.trainer_class={path, name}.
+        trainer_cls = VagenPPOTrainerColocateAsync
+        custom = OmegaConf.select(config, "trainer.v1.trainer_class")
+        if custom and custom.get("path"):
+            path = str(custom["path"])
+            if path.endswith(".py"):
+                from verl.utils.import_utils import load_extern_type
+                trainer_cls = load_extern_type(path, custom["name"])
+            else:
+                # A dotted module path: imported normally so the module is registered in
+                # sys.modules (dataclasses with postponed annotations need that).
+                import importlib
+                trainer_cls = getattr(importlib.import_module(path), custom["name"])
+            if not issubclass(trainer_cls, VagenPPOTrainerColocateAsync):
+                raise TypeError(f"{trainer_cls} must subclass VagenPPOTrainerColocateAsync")
         try:
-            self.trainer = VagenPPOTrainerColocateAsync(config=config)
+            self.trainer = trainer_cls(config=config)
             self.trainer.init()
             self._init_agent_loop_manager()
             self.trainer.fit(self.agent_loop_manager)

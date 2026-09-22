@@ -90,6 +90,37 @@ def _spans_within(spans, keep: int) -> tuple[list[tuple[int, int]], int]:
     return out, safe_end
 
 
+_DEMO_ROWS_CACHE: dict[str, list[dict]] = {}
+
+
+def _scripted_responses(kwargs: dict) -> list[str] | None:
+    """Scripted replies for a demonstration prompt, or None for an ordinary rollout.
+
+    A demonstration dataset is an ordinary env yaml whose ``config.jsonl_path`` rows carry
+    ``demo_responses`` (one reply per turn). The row is the one the environment itself will
+    load for this seed, so the replay and the observations cannot disagree.
+    """
+    if kwargs.get("demo_responses") is not None:
+        return list(kwargs["demo_responses"])
+    config = kwargs.get("config") or {}
+    if not config.get("demo_mode"):
+        return None
+    path = str(config.get("jsonl_path", ""))
+    if not path:
+        return None
+    rows = _DEMO_ROWS_CACHE.get(path)
+    if rows is None:
+        import json
+        with open(path, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        _DEMO_ROWS_CACHE[path] = rows
+    row = rows[int(kwargs["seed"]) % len(rows)]
+    responses = row.get("demo_responses")
+    if not responses:
+        raise KeyError(f"demo_mode row {kwargs['seed']} of {path} has no demo_responses")
+    return list(responses)
+
+
 # Registered under both names: the dataset emits "gym_agent"
 # (gym_agent_dataset.py) and that is what actually dispatches, via
 # configs/agent_v2.yaml. "gym_agent_v2" is the decorator's own name and
@@ -156,7 +187,14 @@ class GymLoop(VagenGymAgentLoopBase):
                 "stop": list(kwargs["stop_strings"]),
                 "include_stop_str_in_output": True,
             }
-        client = VerlClient(
+        # A demonstration row scripts the model's replies (see scripted_client.py): the
+        # environment is stepped on its actions and the rows are the demonstration.
+        scripted = _scripted_responses(kwargs)
+        client_cls, client_extra = (VerlClient, {})
+        if scripted is not None:
+            from vagen.training.agent_loop.scripted_client import ScriptedClient
+            client_cls, client_extra = ScriptedClient, {"responses": scripted}
+        client = client_cls(
             self.server_manager,
             self.tokenizer,
             self.processor,
@@ -169,6 +207,7 @@ class GymLoop(VagenGymAgentLoopBase):
             backend=str(self.config.actor_rollout_ref.rollout.get("name", "vllm")),
             full_determinism=full_determinism,
             rollout_seed=int(self.config.actor_rollout_ref.rollout.get("seed", 0)),
+            **client_extra,
         )
         # What one call may hand the model that it did not generate. Enforced here rather
         # than left to the end of the episode, where an observation that did not fit shows
