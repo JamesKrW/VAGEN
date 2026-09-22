@@ -137,8 +137,7 @@ class GymLoop(VagenGymAgentLoopBase):
     # half of an epoch-end validation was silently cut to 1-2 turns (2026-09-22).
     # ``trainer.v1.graphrl.max_concurrent_episodes`` (per worker; 0 = unlimited; the rollout
     # config is a strict dataclass, so the knob lives in the trainer's free-form section).
-    _episode_sem: "asyncio.Semaphore | None" = None
-    _episode_sem_size: int = -1
+    _episode_sems: dict = {}          # (event loop id, size) -> Semaphore: asyncio primitives bind to one loop
 
     def _episode_slot(self):
         import asyncio
@@ -146,11 +145,13 @@ class GymLoop(VagenGymAgentLoopBase):
             size = int(self.config.trainer.v1.graphrl.get("max_concurrent_episodes", 0) or 0)
         except Exception:  # noqa: BLE001 -- section absent: no cap
             size = 0
-        cls = type(self)
-        if cls._episode_sem is None or cls._episode_sem_size != size:
-            cls._episode_sem = asyncio.Semaphore(size) if size > 0 else None
-            cls._episode_sem_size = size
-        return cls._episode_sem
+        if size <= 0:
+            return None
+        key = (id(asyncio.get_running_loop()), size)
+        sems = type(self)._episode_sems
+        if key not in sems:
+            sems[key] = asyncio.Semaphore(size)
+        return sems[key]
 
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> list[AgentLoopOutput]:
