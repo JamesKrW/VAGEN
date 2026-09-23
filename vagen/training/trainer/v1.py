@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
 from collections import defaultdict
 from typing import Any, Iterable
 
@@ -570,8 +573,29 @@ class VagenV1Mixin(VagenLogicMixin):
         if upload:
             self._vagen_flush_hf()
         super()._save_checkpoint()
+        self._vagen_prune_stale_step_dirs()
         if upload:
             self._vagen_upload_hf()
+
+    def _vagen_prune_stale_step_dirs(self) -> None:
+        """Finish verl's max_actor_ckpt_to_keep: verl removes only ``global_step_N/actor`` of the
+        checkpoints it retires, leaving ``transfer_queue/`` (the in-flight batch, ~10 GB with images)
+        and ``data.pt`` behind. Remove every older step folder whose actor is already gone; folders
+        that still hold an actor (the kept ones, including the one a run resumed from) are untouched."""
+        if not self.config.trainer.get("max_actor_ckpt_to_keep", None):
+            return
+        root = self.config.trainer.default_local_dir
+        if not os.path.isdir(root):
+            return
+        for name in os.listdir(root):
+            m = re.fullmatch(r"global_step_(\d+)", name)
+            if not m or int(m.group(1)) >= self.global_steps:
+                continue
+            folder = os.path.join(root, name)
+            if os.path.isdir(os.path.join(folder, "actor")):
+                continue
+            shutil.rmtree(folder, ignore_errors=True)
+            print(f"[vagen] removed stale checkpoint folder {folder} (actor already pruned)")
 
     def on_validate_end(self):
         super().on_validate_end()
