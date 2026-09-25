@@ -44,7 +44,7 @@ def test_summary_added_to_the_callers_reasoning():
     client = _Client(reject_reasoning=False)
     adapter = OpenAIResponsesAdapter(client=client, model="m")
     _run(adapter, reasoning={"effort": "high"})
-    assert client.calls[0]["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert client.calls[0]["reasoning"] == {"effort": "high", "summary": "concise"}
     assert adapter.last_raw == {"output_text": "ok"}
 
 

@@ -82,7 +82,10 @@ class OpenAIResponsesAdapter(EvaluationBackend):
         asked = False
         if not self._summary_refused and (reasoning is None or isinstance(reasoning, dict)):
             if "summary" not in (reasoning or {}):
-                kwargs["reasoning"] = {**(reasoning or {}), "summary": "auto"}
+                # "concise", not "auto": on gpt-6-astra "auto" resolves to "detailed", which
+                # left the summary empty in 70% of calls; "concise" returned one in 79% (82 vs
+                # 81 calls, 10 ScanNet IVP episodes each, 2026-09-25) at about the same length.
+                kwargs["reasoning"] = {**(reasoning or {}), "summary": "concise"}
                 asked = True
         try:
             resp = await self.client.responses.create(model=self.model, input=messages, **kwargs)
