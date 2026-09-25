@@ -66,12 +66,25 @@ class OpenAIResponsesAdapter(EvaluationBackend):
                 reasoning = value.get("reasoning")
                 if isinstance(reasoning, dict) and reasoning.get("effort"):
                     out.setdefault("reasoning", {"effort": reasoning["effort"]})
+        # Ask for the reasoning summary as well: the raw thinking never leaves the API, the
+        # summary is the only trace of it we can store (raw_responses.json).
+        if not isinstance(out.get("reasoning"), dict):
+            out["reasoning"] = {}
+        out["reasoning"].setdefault("summary", "auto")
         return out
 
     async def acompletion(self, messages: List[Dict[str, Any]], **chat_config: Any) -> str:
-        resp = await self.client.responses.create(
-            model=self.model,
-            input=messages,
-            **self._responses_kwargs(chat_config),
-        )
+        kwargs = self._responses_kwargs(chat_config)
+        try:
+            resp = await self.client.responses.create(model=self.model, input=messages, **kwargs)
+        except Exception as e:  # noqa: BLE001 - a deployment that rejects `summary` gets one retry without it
+            if "summary" in str(e).lower() and isinstance(kwargs.get("reasoning"), dict) and "summary" in kwargs["reasoning"]:
+                kwargs["reasoning"] = {k: v for k, v in kwargs["reasoning"].items() if k != "summary"}
+                resp = await self.client.responses.create(model=self.model, input=messages, **kwargs)
+            else:
+                raise
+        try:
+            self.last_raw = resp.model_dump(mode="json")
+        except Exception:  # noqa: BLE001
+            self.last_raw = {"repr": repr(resp)}
         return resp.output_text or ""
