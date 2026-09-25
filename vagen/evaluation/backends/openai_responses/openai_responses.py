@@ -67,10 +67,13 @@ class OpenAIResponsesAdapter(EvaluationBackend):
                 if isinstance(reasoning, dict) and reasoning.get("effort"):
                     out.setdefault("reasoning", {"effort": reasoning["effort"]})
         # Ask for the reasoning summary as well: the raw thinking never leaves the API, the
-        # summary is the only trace of it we can store (raw_responses.json).
+        # summary is the only trace of it we can store (raw_responses.json). "concise", not "auto":
+        # on gpt-6-astra "auto" resolves to "detailed", which left the summary empty in 70% of calls;
+        # "concise" returned one in 79% (82 vs 81 calls, 10 ScanNet IVP episodes each, 2026-09-25)
+        # at about the same length (median 465 vs 428 chars).
         if not isinstance(out.get("reasoning"), dict):
             out["reasoning"] = {}
-        out["reasoning"].setdefault("summary", "auto")
+        out["reasoning"].setdefault("summary", "concise")
         return out
 
     async def acompletion(self, messages: List[Dict[str, Any]], **chat_config: Any) -> str:
