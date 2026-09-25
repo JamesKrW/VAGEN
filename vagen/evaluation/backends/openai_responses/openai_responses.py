@@ -41,10 +41,13 @@ class OpenAIResponsesAdapter(EvaluationBackend):
     async def acompletion(self, messages: List[Dict[str, Any]], **chat_config: Any) -> str:
         kwargs = dict(chat_config)
         # Ask for the reasoning summary as well: the raw thinking never leaves the API, the
-        # summary is the only trace of it we can store (raw_responses.json).
+        # summary is the only trace of it we can store (raw_responses.json). "concise", not "auto":
+        # on gpt-6-astra "auto" resolves to "detailed", which left the summary empty in 70% of calls;
+        # "concise" returned one in 79% (82 vs 81 calls, 10 ScanNet IVP episodes each, 2026-09-25)
+        # at about the same length (median 465 vs 428 chars).
         reasoning = kwargs.get("reasoning") if isinstance(kwargs.get("reasoning"), dict) else {}
         kwargs["reasoning"] = {**reasoning}
-        kwargs["reasoning"].setdefault("summary", "auto")
+        kwargs["reasoning"].setdefault("summary", "concise")
         try:
             resp = await self.client.responses.create(model=self.model, input=messages, **kwargs)
         except Exception as e:  # noqa: BLE001 - a deployment that rejects `summary` gets one retry without it
