@@ -33,7 +33,18 @@ def _safe_read_json(p: Path) -> Optional[Dict[str, Any]]:
 from vagen.evaluation.summary import NORMAL_FINISH_REASONS  # noqa: E402
 
 
+_SIZER_CACHE: dict = {}
+
+
 def _load_sizers(name):
+    """Cached: one processor/tokenizer per model name for the whole run (each load costs
+    seconds and ~1 GB, and a run starts hundreds of jobs)."""
+    if name not in _SIZER_CACHE:
+        _SIZER_CACHE[name] = _load_sizers_uncached(name)
+    return _SIZER_CACHE[name]
+
+
+def _load_sizers_uncached(name):
     """``(processor, tokenizer)`` for a model id or path; either may be None.
 
     A processor is what makes sizing exact, because it is the only thing that can price a
