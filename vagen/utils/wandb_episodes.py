@@ -35,9 +35,11 @@ class _Renderer:
     """Turns rows into episode records with HTML. No wandb here -- see the module note."""
 
     def render(self, rows, n, step, strategy="balanced", success_ratio=0.5):
-        from vagen.utils.episode_log import episode_rows, select_episodes
+        from vagen.utils.episode_log import episode_rows, render_selected, select_episodes
 
-        return select_episodes(episode_rows(rows), n, strategy, success_ratio), step
+        # Select on the numbers, then render only the chosen episodes (selection never reads the html).
+        chosen = select_episodes(episode_rows(rows, with_html=False), n, strategy, success_ratio)
+        return render_selected(chosen), step
 
 
 def make_renderer(use_ray: bool = True):
