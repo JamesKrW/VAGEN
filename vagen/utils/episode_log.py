@@ -153,8 +153,13 @@ def _render(parts: list[str], content) -> None:
             parts.append(f'<div>{html.escape(part["text"])}</div>')
 
 
-def episode_rows(rows: list[dict]) -> list[dict]:
-    """One record per episode: its html, and the numbers worth sorting a table by."""
+def episode_rows(rows: list[dict], with_html: bool = True) -> list[dict]:
+    """One record per episode: its html, and the numbers worth sorting a table by.
+
+    ``with_html=False`` keeps the episode's turns under ``"_turns"`` instead of rendering them,
+    so a caller that logs only a few episodes can select first and render just those
+    (`render_selected`); rendering every frame of every validation episode can take longer
+    than a training step."""
     out = []
     for key, turns in group_turns(rows).items():
         scores = [t["score"] for t in turns if t.get("score") is not None]
@@ -177,7 +182,7 @@ def episode_rows(rows: list[dict]) -> list[dict]:
                 ),
                 "score": round(sum(scores), 4) if scores else None,
                 "success": max(successes) if successes else None,
-                "html": episode_html(turns),
+                **({"html": episode_html(turns)} if with_html else {"_turns": turns}),
             }
         )
     out.sort(key=lambda r: r["episode"])
@@ -332,3 +337,11 @@ def rows_from_validation(inputs, outputs, scores, images, extras) -> list[dict]:
             strict=True,
         )
     ]
+
+
+def render_selected(episodes: list[dict]) -> list[dict]:
+    """HTML for episodes kept by ``episode_rows(..., with_html=False)`` and chosen by `select_episodes`."""
+    for e in episodes:
+        if "_turns" in e:
+            e["html"] = episode_html(e.pop("_turns"))
+    return episodes
